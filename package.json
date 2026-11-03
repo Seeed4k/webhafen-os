@@ -1,0 +1,17 @@
+{
+  "name": "webhafen-os",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CRM, Pipelines, Prognose, Social Planner, Affiliate-Manager, Trigger-Links, Lead-Finder, Prospect-Agent und Website-Checks in einer App",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^1.4.0"
+  }
+}
