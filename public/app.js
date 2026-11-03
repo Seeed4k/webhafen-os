@@ -65,7 +65,8 @@ const TABS = {
 };
 const TITLES = { heute: 'Heute', dashboard: 'Heute', aufgaben: 'Aufgaben', kalender: 'Kalender', automationen: 'Automationen', kontakte: 'Kontakte', leads: 'Leads', social: 'Social Planner', affiliate: 'Affiliate-Manager', links: 'Trigger-Links', audits: 'Akquise', einstellungen: 'Einstellungen' };
 async function render() {
-  const [sec = 'heute', sub = '', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
+  const [first, sub = '', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
+  const sec = first || 'heute';
   $$('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.s === sec));
   $('#title').textContent = TITLES[sec] || '';
   $('#tabs').innerHTML = (TABS[sec] || []).map(([k, t]) => `<a href="#/${sec}${k ? '/' + k : ''}" class="${k === sub ? 'on' : ''}">${t}</a>`).join('');
@@ -90,7 +91,23 @@ $('#logout').onclick = async () => { await POST('/api/logout'); location.reload(
   SETTINGS = await GET('/api/settings');
   if (SETTINGS.brand_color) document.documentElement.style.setProperty('--accent', SETTINGS.brand_color);
   $('#app').hidden = false; render(); refreshBell();
+  if (s.demo) showDemoBar();
 })();
+
+// Demo-Modus: Hinweis oben und Postausgang mit allen E-Mails, die verschickt würden
+function showDemoBar() {
+  const bar = document.createElement('div'); bar.className = 'demo-bar';
+  bar.innerHTML = `🧪 <b>Demo</b> – alle Daten sind erfunden, E-Mails werden nicht verschickt. <a href="#" id="outbox">📬 Demo-Postausgang</a>
+    <a href="/termin/kostenloses-erstgespraech" target="_blank">📅 Buchungsseite ↗</a><a href="/bericht/demo-musterweg" target="_blank">📄 Beispielbericht ↗</a><a href="/widget" target="_blank">🧩 Widget ↗</a>`;
+  $('main').prepend(bar);
+  $('#outbox').onclick = safe(async (ev) => {
+    ev.preventDefault();
+    const mails = await GET('/api/demo/outbox');
+    modal('Demo-Postausgang', mails.length ? mails.map((m) => `<div class="card mb"><div class="row between"><b>${e(m.subject)}</b>${m.ics ? '<span class="badge open">📅 mit Kalendereintrag</span>' : ''}</div>
+      <div class="small sub mb">an ${e(m.to)}</div><div class="small" style="white-space:pre-wrap">${e(m.text)}</div></div>`).join('')
+      : '<p class="sub">Noch keine E-Mails. Buche z. B. einen Termin auf der Buchungsseite – die Bestätigung erscheint dann hier.</p>', null, { wide: true });
+  });
+}
 
 // ===== Kontakte =====
 VIEWS.kontakte = async (v, sub) => {

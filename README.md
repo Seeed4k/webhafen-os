@@ -11,6 +11,25 @@ ohne monatliche Lizenzkosten.
 - **Kein Build-Schritt**: `npm install && npm start` und fertig
 - Alle Daten liegen in einer Datei: `data/webhafen-os.db` (zum Sichern einfach kopieren)
 
+## Ausprobieren (Demo auf dem eigenen Rechner)
+
+Mit erfundenen Beispieldaten – E-Mails werden **nicht** verschickt, sondern im *Demo-Postausgang* gesammelt:
+
+```bash
+npm install
+npm run demo
+```
+
+| Was | Adresse |
+|---|---|
+| App (Passwort `demo`) | http://localhost:3000 |
+| Buchungsseite für Interessenten | http://localhost:3000/termin/kostenloses-erstgespraech |
+| Beispiel-Bericht (Website-Check) | http://localhost:3000/bericht/demo-musterweg |
+| Widget | http://localhost:3000/widget |
+
+Im gleichen WLAN klappt die Buchungsseite auch vom Handy – die Adresse zeigt `npm run demo` beim Start an.
+Daten zurücksetzen: `npm run demo -- --neu`. Die Demo-Datenbank (`data/demo.db`) ist getrennt von den echten Daten.
+
 ## Starten
 
 ```bash

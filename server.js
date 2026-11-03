@@ -14,7 +14,7 @@ import { searchArea, leadPotential, heatmapScan, hasPlacesKey } from './lib/plac
 import { createAudit, auditProspect, prospectToCrm, outreachForProspect, upsertProspect, runAgent, runDueAgents, checkSites, cachedSite } from './lib/prospects.js';
 import { emit, resumeDue, startRun, TRIGGERS, STEP_TYPES, presets } from './lib/automation.js';
 import { logActivity, createTask, notify } from './lib/crm.js';
-import { sendMail, mailReady } from './lib/mailer.js';
+import { sendMail, mailReady, outbox } from './lib/mailer.js';
 import { slotsFor, availableDays, book, icsInvite, icsFeed, appointmentMail, sendReminders, formatDe, toDate } from './lib/calendar.js';
 import { renderBookingPage, renderCancelPage } from './lib/booking-page.js';
 
@@ -73,7 +73,12 @@ function crud(base, table, fields, { order = 'id DESC', required = ['name'], pre
 }
 
 // ---------- Auth ----------
-route('GET', '/api/session', ({ req }) => ({ loggedIn: !PASSWORD || sessions.has(cookies(req).sid), passwordSet: !!PASSWORD }), { pub: true });
+route('GET', '/api/session', ({ req }) => ({ loggedIn: !PASSWORD || sessions.has(cookies(req).sid), passwordSet: !!PASSWORD, demo: process.env.DEMO === '1' }), { pub: true });
+// Demo-Modus: statt zu versenden werden E-Mails gesammelt und hier angezeigt
+route('GET', '/api/demo/outbox', () => {
+  if (process.env.DEMO !== '1') throw new HttpError(404, 'Nur im Demo-Modus');
+  return outbox.slice(-50).reverse().map((m) => ({ to: m.to, subject: m.subject, text: m.text, ics: !!m.icalEvent }));
+});
 route('POST', '/api/login', ({ body, res }) => {
   const a = createHash('sha256').update(String(body.password || '')).digest();
   const b = createHash('sha256').update(PASSWORD).digest();
@@ -847,9 +852,10 @@ export async function handle(req, res) {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  http.createServer(handle).listen(PORT, process.env.HOST || undefined, () => {
-    console.log(`Webhafen OS läuft auf http://${process.env.HOST || 'localhost'}:${PORT}`);
+// Startet Webserver und Planer (von `npm start` und vom Demo-Skript genutzt)
+export function start({ port = PORT, host = process.env.HOST } = {}) {
+  const server = http.createServer(handle).listen(port, host || undefined, () => {
+    console.log(`Webhafen OS läuft auf http://${host || 'localhost'}:${port}`);
     if (!PASSWORD) console.warn('⚠  ADMIN_PASSWORD ist nicht gesetzt – die App ist ohne Login erreichbar. Nur lokal so betreiben!');
   });
   let busy = false;
@@ -859,4 +865,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     } catch (e) { console.error('Planer:', e); } busy = false; }, 30_000);
   const feeds = async () => { for (const f of all('SELECT * FROM rss_feeds')) await checkFeed(db, f); };
   setInterval(() => feeds().catch((e) => console.error('RSS:', e)), 30 * 60_000);
+  return server;
 }
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) start();

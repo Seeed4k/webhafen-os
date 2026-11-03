@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "demo": "node --disable-warning=ExperimentalWarning scripts/demo.js"
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^1.4.0"

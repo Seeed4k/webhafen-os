@@ -79,7 +79,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}.tablewrap{over
 .dd{position:relative}.dd-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:30;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:240px;box-shadow:0 8px 24px #0f172a22;display:grid;gap:6px}
 .leaflet-container{z-index:0}
 /* ===== Phase 1 ===== */
-.top{position:sticky}.bell-wrap{margin-left:auto;position:relative}.bell{background:none;border:1px solid var(--line);border-radius:10px;width:40px;height:38px;font-size:17px;cursor:pointer;position:relative}
+.top{position:sticky}
+.demo-bar{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;background:#fef3c7;color:#78350f;padding:8px 24px;font-size:13px;border-bottom:1px solid #fcd34d}.demo-bar a{color:#78350f;font-weight:600}.bell-wrap{margin-left:auto;position:relative}.bell{background:none;border:1px solid var(--line);border-radius:10px;width:40px;height:38px;font-size:17px;cursor:pointer;position:relative}
 .bell b{position:absolute;top:-6px;right:-6px;background:var(--bad);color:#fff;border-radius:99px;font-size:11px;min-width:18px;height:18px;line-height:18px;padding:0 4px}
 .bell-menu{position:absolute;right:0;top:calc(100% + 8px);width:min(380px,90vw);max-height:70vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px #0f172a2e;padding:12px;z-index:40}
 .note{display:block;padding:9px 10px;border-radius:8px;color:var(--text);text-decoration:none;margin-top:4px}.note:hover{background:var(--soft)}.note.unread{background:var(--accent-soft)}
