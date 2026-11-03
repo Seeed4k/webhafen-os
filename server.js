@@ -12,6 +12,11 @@ import { publishPost, runScheduler, checkFeed, PLATFORMS } from './lib/social.js
 import { renderReport, renderWidget } from './lib/report.js';
 import { searchArea, leadPotential, heatmapScan, hasPlacesKey } from './lib/places.js';
 import { createAudit, auditProspect, prospectToCrm, outreachForProspect, upsertProspect, runAgent, runDueAgents, checkSites, cachedSite } from './lib/prospects.js';
+import { emit, resumeDue, startRun, TRIGGERS, STEP_TYPES, presets } from './lib/automation.js';
+import { logActivity, createTask, notify } from './lib/crm.js';
+import { sendMail, mailReady } from './lib/mailer.js';
+import { slotsFor, availableDays, book, icsInvite, icsFeed, appointmentMail, sendReminders, formatDe, toDate } from './lib/calendar.js';
+import { renderBookingPage, renderCancelPage } from './lib/booking-page.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -80,8 +85,12 @@ route('POST', '/api/login', ({ body, res }) => {
 route('POST', '/api/logout', ({ req, res }) => { sessions.delete(cookies(req).sid); res.setHeader('set-cookie', 'sid=; Path=/; Max-Age=0'); return { ok: true }; });
 
 // ---------- Einstellungen & Dashboard ----------
-route('GET', '/api/settings', () => ({ ...getSettings(db), platforms: PLATFORMS, places_key: !!process.env.GOOGLE_PLACES_API_KEY, pagespeed_key: !!process.env.PAGESPEED_API_KEY, ai_key: !!process.env.ANTHROPIC_API_KEY }));
-route('PUT', '/api/settings', ({ body }) => { const { platforms, places_key, pagespeed_key, ai_key, ...rest } = body; setSettings(db, rest); return getSettings(db); });
+route('GET', '/api/settings', () => ({ ...getSettings(db), smtp_pass: undefined, smtp_pass_set: !!getSettings(db).smtp_pass, mail_ready: mailReady(db), platforms: PLATFORMS, places_key: !!process.env.GOOGLE_PLACES_API_KEY, pagespeed_key: !!process.env.PAGESPEED_API_KEY, ai_key: !!process.env.ANTHROPIC_API_KEY }));
+route('PUT', '/api/settings', ({ body }) => {
+  const { platforms, places_key, pagespeed_key, ai_key, smtp_pass_set, mail_ready, ...rest } = body;
+  if (rest.smtp_pass === '' || rest.smtp_pass == null) delete rest.smtp_pass; // leeres Feld = Passwort behalten
+  setSettings(db, rest); return { ...getSettings(db), smtp_pass: undefined, smtp_pass_set: !!getSettings(db).smtp_pass, mail_ready: mailReady(db) };
+});
 route('GET', '/api/dashboard', () => {
   const f = forecast(db, null);
   return {
@@ -96,7 +105,23 @@ route('GET', '/api/dashboard', () => {
 });
 
 // ---------- Kontakte ----------
-crud('/api/contacts', 'contacts', ['name', 'email', 'phone', 'company', 'tags', 'notes'], { order: 'name COLLATE NOCASE' });
+const CONTACT_FIELDS = ['name', 'email', 'phone', 'company', 'tags', 'notes'];
+const tagList = (t) => String(t || '').split(',').map((x) => x.trim()).filter(Boolean);
+function contactCreated(id) {
+  const c = one('SELECT * FROM contacts WHERE id = ?', id);
+  emit(db, 'contact.created', { contact_id: id });
+  for (const tag of tagList(c.tags)) emit(db, 'contact.tag_added', { contact_id: id, tag });
+}
+route('GET', '/api/contacts', () => all('SELECT * FROM contacts ORDER BY name COLLATE NOCASE'));
+route('POST', '/api/contacts', ({ body }) => { need(body.name, 'Name fehlt'); const id = insert('contacts', pick(body, CONTACT_FIELDS)); contactCreated(id); return one('SELECT * FROM contacts WHERE id = ?', id); });
+route('PUT', '/api/contacts/:id', ({ body, params }) => {
+  const old = one('SELECT * FROM contacts WHERE id = ?', params.id); if (!old) throw new HttpError(404, 'Nicht gefunden');
+  update('contacts', params.id, pick(body, CONTACT_FIELDS));
+  const before = tagList(old.tags).map((t) => t.toLowerCase());
+  if (body.tags !== undefined) for (const tag of tagList(body.tags)) if (!before.includes(tag.toLowerCase())) emit(db, 'contact.tag_added', { contact_id: Number(params.id), tag });
+  return one('SELECT * FROM contacts WHERE id = ?', params.id);
+});
+route('DELETE', '/api/contacts/:id', ({ params }) => { db.prepare('DELETE FROM contacts WHERE id = ?').run(params.id); return { ok: true }; });
 route('POST', '/api/contacts/import', ({ body }) => {
   let n = 0;
   for (const r of parseCSV(body.csv || '')) {
@@ -151,8 +176,24 @@ route('POST', '/api/opportunities', ({ body }) => {
   const d = pick(body, OPP_FIELDS); d.contact_id = resolveContact(body);
   if (!d.stage_id) d.stage_id = one('SELECT id FROM stages WHERE pipeline_id = ? ORDER BY position LIMIT 1', body.pipeline_id)?.id ?? null;
   d.updated_at = localStamp(); if (d.status && d.status !== 'open') d.closed_at = localStamp();
-  return one(`${oppQuery} WHERE o.id = ?`, insert('opportunities', d));
+  const id = insert('opportunities', d);
+  if (!body.contact_id && d.contact_id) contactCreated(d.contact_id);
+  logActivity(db, { type: 'status', title: `Lead angelegt: ${d.name}`, opportunity_id: id });
+  emit(db, 'opportunity.created', { opportunity_id: id, pipeline_id: d.pipeline_id });
+  return one(`${oppQuery} WHERE o.id = ?`, id);
 });
+function oppChanged(old, id) {
+  const now = one('SELECT o.*, s.name stage_name FROM opportunities o LEFT JOIN stages s ON s.id = o.stage_id WHERE o.id = ?', id);
+  if (!now) return;
+  if (now.stage_id !== old.stage_id && now.stage_id) {
+    logActivity(db, { type: 'status', title: `Phase → ${now.stage_name}`, opportunity_id: id });
+    emit(db, 'opportunity.stage_changed', { opportunity_id: id, pipeline_id: now.pipeline_id, stage_id: now.stage_id });
+  }
+  if (now.status !== old.status) {
+    logActivity(db, { type: 'status', title: `Status → ${({ open: 'Offen', won: 'Gewonnen', lost: 'Verloren', abandoned: 'Aufgegeben' })[now.status] || now.status}`, opportunity_id: id });
+    emit(db, 'opportunity.status_changed', { opportunity_id: id, status: now.status });
+  }
+}
 route('PUT', '/api/opportunities/:id', ({ body, params }) => {
   const old = one('SELECT * FROM opportunities WHERE id = ?', params.id); if (!old) throw new HttpError(404, 'Nicht gefunden');
   const d = pick(body, OPP_FIELDS);
@@ -164,16 +205,20 @@ route('PUT', '/api/opportunities/:id', ({ body, params }) => {
   if (d.status && d.status !== old.status) d.closed_at = d.status === 'open' ? null : localStamp();
   d.updated_at = localStamp();
   update('opportunities', params.id, d);
+  if (d.contact_id && d.contact_id !== old.contact_id && !body.contact_id) contactCreated(d.contact_id);
+  oppChanged(old, Number(params.id));
   return one(`${oppQuery} WHERE o.id = ?`, params.id);
 });
 route('DELETE', '/api/opportunities/:id', ({ params }) => { db.prepare('DELETE FROM opportunities WHERE id = ?').run(params.id); return { ok: true }; });
 route('POST', '/api/opportunities/bulk', ({ body }) => {
   const ids = (body.ids || []).map(Number);
   for (const id of ids) {
+    const old = one('SELECT * FROM opportunities WHERE id = ?', id); if (!old) continue;
     if (body.action === 'delete') db.prepare('DELETE FROM opportunities WHERE id = ?').run(id);
     else if (body.action === 'status') update('opportunities', id, { status: body.value, closed_at: body.value === 'open' ? null : localStamp(), updated_at: localStamp() });
     else if (body.action === 'stage') update('opportunities', id, { stage_id: body.value, updated_at: localStamp() });
     else if (body.action === 'tag') db.prepare(`UPDATE opportunities SET tags = TRIM(COALESCE(tags,'') || ',' || ?, ',') WHERE id = ?`).run(body.value, id);
+    if (body.action !== 'delete') oppChanged(old, id);
   }
   return { ok: true, count: ids.length };
 });
@@ -340,7 +385,7 @@ route('POST', '/api/audits', async ({ body }) => {
 });
 route('POST', '/api/audits/:id/to-lead', ({ params }) => {
   const a = one('SELECT * FROM audits WHERE id = ?', params.id); if (!a) throw new HttpError(404, 'Nicht gefunden');
-  return prospectToCrm(db, a.prospect_id);
+  return toCrm(a.prospect_id);
 });
 route('POST', '/api/audits/:id/heatmap', async ({ params, body }) => {
   const a = one('SELECT * FROM audits WHERE id = ?', params.id); if (!a) throw new HttpError(404, 'Nicht gefunden');
@@ -357,11 +402,31 @@ route('DELETE', '/api/audits/:id', ({ params }) => {
 });
 route('GET', '/bericht/:token', ({ params, req, res, query }) => {
   const a = one('SELECT * FROM audits WHERE token = ?', params.token); if (!a) throw new HttpError(404, 'Bericht nicht gefunden');
-  if (!query.vorschau && !/bot|crawl|spider|preview|facebookexternalhit|whatsapp/i.test(req.headers['user-agent'] || '')) insert('report_views', { audit_id: a.id, referer: req.headers.referer || '' });
+  if (!query.vorschau && !/bot|crawl|spider|preview|facebookexternalhit|whatsapp/i.test(req.headers['user-agent'] || '')) {
+    // Nur der erste Aufruf innerhalb von 24 Stunden löst Automationen aus
+    const recent = one(`SELECT COUNT(*) n FROM report_views WHERE audit_id = ? AND created_at >= datetime('now','localtime','-1 day')`, a.id).n;
+    insert('report_views', { audit_id: a.id, referer: req.headers.referer || '' });
+    if (!recent) {
+      const pr = a.prospect_id ? one('SELECT * FROM prospects WHERE id = ?', a.prospect_id) : null;
+      const contact_id = pr?.contact_id || a.contact_id || null;
+      if (contact_id) logActivity(db, { type: 'bericht', title: `Website-Check-Bericht geöffnet (${a.score} %)`, contact_id, prospect_id: pr?.id });
+      emit(db, 'report.viewed', { audit_id: a.id, prospect_id: pr?.id ?? null, contact_id });
+    }
+  }
   send(res, 200, renderReport({ ...a, result: parseJSON(a.result, {}), heatmaps: parseJSON(a.heatmaps, []) }, getSettings(db)), 'text/html; charset=utf-8'); return null;
 }, { pub: true });
 
 // ---------- Interessenten & Lead-Finder ----------
+function toCrm(prospectId) {
+  const before = one('SELECT contact_id FROM prospects WHERE id = ?', prospectId);
+  const r = prospectToCrm(db, prospectId);
+  if (!r.existed) {
+    if (!before?.contact_id) contactCreated(r.contact_id);
+    logActivity(db, { type: 'status', title: 'Aus der Akquise ins CRM übernommen', opportunity_id: r.opportunity_id, prospect_id: Number(prospectId) });
+    emit(db, 'opportunity.created', { opportunity_id: r.opportunity_id });
+  }
+  return r;
+}
 const prospectQuery = `SELECT p.*, a.score audit_score, a.token audit_token, (SELECT COUNT(*) FROM report_views v WHERE v.audit_id = p.audit_id) views FROM prospects p LEFT JOIN audits a ON a.id = p.audit_id`;
 route('GET', '/api/prospects', ({ query }) => {
   const where = []; const args = [];
@@ -397,7 +462,7 @@ route('POST', '/api/prospects', async ({ body }) => {
 route('PUT', '/api/prospects/:id', ({ params, body }) => { update('prospects', params.id, pick(body, ['name', 'address', 'phone', 'website', 'category', 'status', 'notes'])); return one(`${prospectQuery} WHERE p.id = ?`, params.id); });
 route('DELETE', '/api/prospects/:id', ({ params }) => { db.prepare('DELETE FROM prospects WHERE id = ?').run(params.id); return { ok: true }; });
 route('POST', '/api/prospects/:id/audit', async ({ params }) => { try { return await auditProspect(db, params.id); } catch (e) { throw auditError(e); } });
-route('POST', '/api/prospects/:id/crm', ({ params }) => prospectToCrm(db, params.id));
+route('POST', '/api/prospects/:id/crm', ({ params }) => toCrm(params.id));
 route('POST', '/api/prospects/:id/outreach', ({ params }) => outreachForProspect(db, params.id));
 
 // ---------- Prospect-Agent ----------
@@ -465,14 +530,287 @@ route('POST', '/api/public/widget', async ({ body, req }) => {
     const a = await createAudit(db, { business_name: body.business_name, url: body.url, phone: body.phone || '' }, { source: 'widget' });
     const contact_id = insert('contacts', { name: body.name || body.business_name, email: body.email, phone: body.phone || '', company: body.business_name, tags: 'widget,website-check', notes: `Website-Check über Widget: ${a.score} %\nEinwilligung zur Kontaktaufnahme: ${localStamp()}` });
     update('prospects', a.prospect_id, { contact_id, status: 'im CRM' });
-    prospectToCrm(db, a.prospect_id);
+    const crm = prospectToCrm(db, a.prospect_id);
     update('widget_submissions', sub, { audit_id: a.id, prospect_id: a.prospect_id });
+    logActivity(db, { type: 'bericht', title: `Website-Check über Widget angefragt (${a.score} %)`, contact_id, prospect_id: a.prospect_id });
+    contactCreated(contact_id);
+    emit(db, 'widget.submitted', { contact_id, audit_id: a.id, prospect_id: a.prospect_id, opportunity_id: crm.opportunity_id });
     return { ok: true, score: a.score, report_url: `/bericht/${a.token}` };
   } catch (e) {
     update('widget_submissions', sub, { error: e.message });
     throw new HttpError(422, 'Die Website konnte nicht geprüft werden. Bitte Adresse prüfen.');
   }
 }, { pub: true });
+
+// ---------- Aufgaben ----------
+const taskQuery = `SELECT t.*, c.name contact_name, o.name opportunity_name, p.name prospect_name FROM tasks t
+  LEFT JOIN contacts c ON c.id = t.contact_id LEFT JOIN opportunities o ON o.id = t.opportunity_id LEFT JOIN prospects p ON p.id = t.prospect_id`;
+const TASK_FIELDS = ['title', 'notes', 'due_at', 'priority', 'contact_id', 'opportunity_id', 'prospect_id'];
+const normDue = (v) => (v ? String(v).replace('T', ' ').slice(0, 16) : null);
+route('GET', '/api/tasks', ({ query }) => {
+  const where = []; const args = []; const now = localStamp(); const today = now.slice(0, 10);
+  if (query.status === 'erledigt') where.push(`t.status = 'erledigt'`); else where.push(`t.status = 'offen'`);
+  if (query.scope === 'heute') { where.push('t.due_at IS NOT NULL AND substr(t.due_at,1,10) <= ?'); args.push(today); }
+  // Aufgaben ohne Uhrzeit (nur Datum) sind erst am Folgetag überfällig
+  if (query.scope === 'ueberfaellig') { where.push(`t.due_at IS NOT NULL AND ((length(t.due_at) <= 10 AND t.due_at < ?) OR (length(t.due_at) > 10 AND t.due_at < ?))`); args.push(today, now); }
+  if (query.scope === 'woche') { const w = new Date(); w.setDate(w.getDate() + 7); where.push('t.due_at IS NOT NULL AND t.due_at <= ?'); args.push(localStamp(w)); }
+  for (const k of ['contact_id', 'opportunity_id', 'prospect_id']) if (query[k]) { where.push(`t.${k} = ?`); args.push(query[k]); }
+  const order = query.status === 'erledigt' ? 't.done_at DESC' : `CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END, t.due_at, CASE t.priority WHEN 'hoch' THEN 0 ELSE 1 END, t.id`;
+  return all(`${taskQuery} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT 300`, ...args);
+});
+route('POST', '/api/tasks', ({ body }) => {
+  need(body.title, 'Titel fehlt');
+  const d = pick(body, TASK_FIELDS); d.due_at = normDue(d.due_at);
+  return one(`${taskQuery} WHERE t.id = ?`, createTask(db, d));
+});
+route('PUT', '/api/tasks/:id', ({ body, params }) => {
+  const old = one('SELECT * FROM tasks WHERE id = ?', params.id); if (!old) throw new HttpError(404, 'Nicht gefunden');
+  const d = pick(body, [...TASK_FIELDS, 'status']); if (d.due_at !== undefined) d.due_at = normDue(d.due_at);
+  if (d.status && d.status !== old.status) d.done_at = d.status === 'erledigt' ? localStamp() : null;
+  update('tasks', params.id, d);
+  if (d.status === 'erledigt' && old.status !== 'erledigt' && (old.contact_id || old.opportunity_id)) logActivity(db, { type: 'aufgabe', title: `Aufgabe erledigt: ${old.title}`, contact_id: old.contact_id, opportunity_id: old.opportunity_id });
+  return one(`${taskQuery} WHERE t.id = ?`, params.id);
+});
+route('DELETE', '/api/tasks/:id', ({ params }) => { db.prepare('DELETE FROM tasks WHERE id = ?').run(params.id); return { ok: true }; });
+
+// ---------- Verlauf (Aktivitäten) ----------
+route('GET', '/api/activities', ({ query }) => {
+  const where = []; const args = [];
+  for (const k of ['contact_id', 'opportunity_id', 'prospect_id']) if (query[k]) { where.push(`a.${k} = ?`); args.push(query[k]); }
+  return all(`SELECT a.*, o.name opportunity_name FROM activities a LEFT JOIN opportunities o ON o.id = a.opportunity_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY a.created_at DESC, a.id DESC LIMIT 200`, ...args);
+});
+route('POST', '/api/activities', ({ body }) => {
+  need(body.title || body.body, 'Text fehlt');
+  const type = ['notiz', 'anruf', 'email', 'treffen'].includes(body.type) ? body.type : 'notiz';
+  const id = logActivity(db, { type, title: body.title || String(body.body).slice(0, 120), body: body.body || '', contact_id: body.contact_id || null, opportunity_id: body.opportunity_id || null });
+  return one('SELECT * FROM activities WHERE id = ?', id);
+});
+route('DELETE', '/api/activities/:id', ({ params }) => { db.prepare('DELETE FROM activities WHERE id = ?').run(params.id); return { ok: true }; });
+
+// ---------- Kontakt-Detail ----------
+route('GET', '/api/contacts/:id/overview', ({ params }) => {
+  const c = one('SELECT * FROM contacts WHERE id = ?', params.id); if (!c) throw new HttpError(404, 'Kontakt nicht gefunden');
+  return {
+    contact: c,
+    opportunities: all(`SELECT o.*, s.name stage_name, p.name pipeline_name FROM opportunities o LEFT JOIN stages s ON s.id = o.stage_id LEFT JOIN pipelines p ON p.id = o.pipeline_id WHERE o.contact_id = ? ORDER BY o.id DESC`, c.id),
+    tasks: all(`${taskQuery} WHERE t.contact_id = ? ORDER BY t.status DESC, t.due_at`, c.id),
+    appointments: all(`SELECT a.*, k.name calendar_name FROM appointments a LEFT JOIN calendars k ON k.id = a.calendar_id WHERE a.contact_id = ? ORDER BY a.start_at DESC`, c.id),
+    activities: all('SELECT a.*, o.name opportunity_name FROM activities a LEFT JOIN opportunities o ON o.id = a.opportunity_id WHERE a.contact_id = ? ORDER BY a.created_at DESC, a.id DESC LIMIT 200', c.id),
+    prospects: all('SELECT p.*, a.score audit_score, a.token audit_token FROM prospects p LEFT JOIN audits a ON a.id = p.audit_id WHERE p.contact_id = ?', c.id),
+  };
+});
+route('POST', '/api/contacts/:id/email', async ({ params, body }) => {
+  const c = one('SELECT * FROM contacts WHERE id = ?', params.id); if (!c?.email) throw new HttpError(400, 'Der Kontakt hat keine E-Mail-Adresse');
+  need(body.subject, 'Betreff fehlt'); need(body.body, 'Text fehlt');
+  await sendMail(db, { to: c.email, subject: body.subject, text: body.body });
+  logActivity(db, { type: 'email', title: `E-Mail gesendet: ${body.subject}`, body: body.body, contact_id: c.id, opportunity_id: body.opportunity_id || null });
+  return { ok: true };
+});
+
+// ---------- Benachrichtigungen ----------
+route('GET', '/api/notifications', () => ({
+  unread: one('SELECT COUNT(*) n FROM notifications WHERE read = 0').n,
+  items: all('SELECT * FROM notifications ORDER BY id DESC LIMIT 30'),
+}));
+route('POST', '/api/notifications/read', ({ body }) => {
+  if (body.id) db.prepare('UPDATE notifications SET read = 1 WHERE id = ?').run(body.id); else db.prepare('UPDATE notifications SET read = 1').run();
+  return { ok: true };
+});
+
+// ---------- Heute ----------
+route('GET', '/api/today', () => {
+  const now = localStamp(); const today = now.slice(0, 10);
+  const week = new Date(); week.setDate(week.getDate() + 7);
+  const f = forecast(db, null);
+  return {
+    now,
+    overdue: all(`${taskQuery} WHERE t.status = 'offen' AND t.due_at IS NOT NULL AND substr(t.due_at,1,10) < ? ORDER BY t.due_at`, today),
+    today: all(`${taskQuery} WHERE t.status = 'offen' AND substr(t.due_at,1,10) = ? ORDER BY t.due_at`, today),
+    upcoming: all(`${taskQuery} WHERE t.status = 'offen' AND (t.due_at IS NULL OR (t.due_at > ? AND t.due_at <= ?)) ORDER BY CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END, t.due_at LIMIT 10`, `${today} 23:59`, localStamp(week)),
+    appointments: all(`SELECT a.*, k.name calendar_name, k.color FROM appointments a LEFT JOIN calendars k ON k.id = a.calendar_id WHERE a.status = 'gebucht' AND a.end_at >= ? AND a.start_at <= ? ORDER BY a.start_at LIMIT 12`, now, localStamp(week)),
+    hot: all(`SELECT a.id audit_id, a.business_name, a.score, p.id prospect_id, p.status, p.contact_id, COUNT(v.id) views, MAX(v.created_at) last_view
+      FROM report_views v JOIN audits a ON a.id = v.audit_id LEFT JOIN prospects p ON p.id = a.prospect_id
+      WHERE v.created_at >= datetime('now','localtime','-7 days') GROUP BY a.id ORDER BY last_view DESC LIMIT 8`),
+    widget: all(`SELECT w.*, a.score FROM widget_submissions w LEFT JOIN audits a ON a.id = w.audit_id WHERE w.created_at >= datetime('now','localtime','-7 days') AND w.error IS NULL ORDER BY w.id DESC LIMIT 5`),
+    newProspects: one(`SELECT COUNT(*) n FROM prospects WHERE status = 'neu' OR (status = 'geprüft' AND created_at >= datetime('now','localtime','-7 days'))`).n,
+    posts: all(`SELECT id, content, scheduled_at, status FROM posts WHERE (status = 'scheduled' AND substr(scheduled_at,1,10) = ?) OR status IN ('failed','manual') ORDER BY scheduled_at LIMIT 5`, today),
+    forecast: f.totals,
+  };
+});
+
+// ---------- Kalender & Termine ----------
+const DEFAULT_AVAIL = JSON.stringify({ 1: [['09:00', '17:00']], 2: [['09:00', '17:00']], 3: [['09:00', '17:00']], 4: [['09:00', '17:00']], 5: [['09:00', '15:00']] });
+crud('/api/calendars', 'calendars', ['name', 'slug', 'description', 'duration', 'buffer', 'slot_step', 'min_notice_hours', 'max_days', 'availability', 'location', 'reminder_hours', 'create_lead', 'color', 'active'], {
+  order: 'id',
+  prepare: (d, body) => {
+    if (body.slug !== undefined || !body.id) d.slug = slugify(body.slug || body.name);
+    if (d.availability !== undefined) d.availability = typeof d.availability === 'string' ? d.availability : JSON.stringify(d.availability || {});
+    else if (!body.id) d.availability = DEFAULT_AVAIL;
+    return d;
+  },
+});
+const apptQuery = `SELECT a.*, k.name calendar_name, k.color, c.name contact_name FROM appointments a LEFT JOIN calendars k ON k.id = a.calendar_id LEFT JOIN contacts c ON c.id = a.contact_id`;
+route('GET', '/api/appointments', ({ query }) => {
+  const from = query.from || localStamp(new Date(Date.now() - 864e5)).slice(0, 10); const to = query.to || '9999';
+  return all(`${apptQuery} WHERE a.start_at >= ? AND a.start_at <= ? ${query.all ? '' : `AND a.status != 'abgesagt'`} ORDER BY a.start_at LIMIT 500`, `${from} 00:00`, `${to} 23:59`);
+});
+async function confirmAppointment(a, cal, kind = 'confirm') {
+  if (!a.email || !mailReady(db)) return false;
+  const s = getSettings(db); const m = appointmentMail(a, cal, s, kind);
+  try {
+    await sendMail(db, { to: a.email, subject: m.subject, text: m.text, ics: icsInvite(a, s, kind === 'cancel' ? 'CANCEL' : 'REQUEST'), icsMethod: kind === 'cancel' ? 'CANCEL' : 'REQUEST' });
+    if (a.contact_id) logActivity(db, { type: 'email', title: m.subject, body: m.text, contact_id: a.contact_id, opportunity_id: a.opportunity_id });
+    return true;
+  } catch (e) { console.error('Termin-Mail:', e.message); return false; }
+}
+route('POST', '/api/appointments', async ({ body }) => {
+  need(body.date, 'Datum fehlt'); need(body.time, 'Uhrzeit fehlt');
+  const kind = body.kind === 'blocker' ? 'blocker' : 'termin';
+  const start = toDate(`${body.date} ${body.time}`); if (Number.isNaN(start.getTime())) throw new HttpError(400, 'Ungültiges Datum');
+  const end = new Date(start.getTime() + (Number(body.duration) || 30) * 60000);
+  const c = body.contact_id ? one('SELECT * FROM contacts WHERE id = ?', body.contact_id) : null;
+  const id = insert('appointments', {
+    calendar_id: body.calendar_id || null, title: body.title || (kind === 'blocker' ? 'Blocker' : c ? `Termin: ${c.name}` : 'Termin'), start_at: localStamp(start), end_at: localStamp(end), kind,
+    contact_id: c?.id ?? null, opportunity_id: body.opportunity_id || null, name: c?.name || '', email: c?.email || '', phone: c?.phone || '', message: body.message || '',
+    location: body.location || '', token: token(16), source: 'manuell',
+  });
+  const a = one('SELECT * FROM appointments WHERE id = ?', id);
+  if (c) logActivity(db, { type: 'termin', title: `Termin eingetragen: ${formatDe(a.start_at)}`, contact_id: c.id, opportunity_id: a.opportunity_id });
+  const mailed = body.send_mail && kind === 'termin' ? await confirmAppointment(a, a.calendar_id ? one('SELECT * FROM calendars WHERE id = ?', a.calendar_id) : null) : false;
+  return { ...one(`${apptQuery} WHERE a.id = ?`, id), mailed };
+});
+route('PUT', '/api/appointments/:id', async ({ params, body }) => {
+  const old = one('SELECT * FROM appointments WHERE id = ?', params.id); if (!old) throw new HttpError(404, 'Nicht gefunden');
+  const d = pick(body, ['title', 'status', 'location', 'message', 'contact_id']);
+  if (body.date && body.time) {
+    const start = toDate(`${body.date} ${body.time}`);
+    const dur = Number(body.duration) || (toDate(old.end_at) - toDate(old.start_at)) / 60000;
+    Object.assign(d, { start_at: localStamp(start), end_at: localStamp(new Date(start.getTime() + dur * 60000)), reminder_sent: 0 });
+  }
+  update('appointments', params.id, d);
+  const a = one('SELECT * FROM appointments WHERE id = ?', params.id);
+  if (d.status && d.status !== old.status) {
+    if (a.contact_id) logActivity(db, { type: 'termin', title: `Termin ${d.status}: ${formatDe(a.start_at)}`, contact_id: a.contact_id, opportunity_id: a.opportunity_id });
+    if (d.status === 'abgesagt') {
+      if (body.notify_customer) await confirmAppointment(a, a.calendar_id ? one('SELECT * FROM calendars WHERE id = ?', a.calendar_id) : null, 'cancel');
+      emit(db, 'appointment.cancelled', { appointment_id: a.id, calendar_id: a.calendar_id, contact_id: a.contact_id });
+    }
+  }
+  return one(`${apptQuery} WHERE a.id = ?`, params.id);
+});
+route('DELETE', '/api/appointments/:id', ({ params }) => { db.prepare('DELETE FROM appointments WHERE id = ?').run(params.id); return { ok: true }; });
+
+// Kalender-Abo (z. B. in Google Kalender, Apple Kalender oder Outlook abonnieren)
+route('GET', '/kalender.ics', ({ query, res }) => {
+  const key = getSettings(db).ics_key;
+  if (!key || query.key !== key) throw new HttpError(403, 'Ungültiger Schlüssel');
+  send(res, 200, icsFeed(db), 'text/calendar; charset=utf-8', { 'content-disposition': 'inline; filename="webhafen-os.ics"' }); return null;
+}, { pub: true });
+
+// ---------- Öffentliche Terminbuchung ----------
+const pubCal = (slug) => { const c = one('SELECT * FROM calendars WHERE slug = ? AND active = 1', slug); if (!c) throw new HttpError(404, 'Diese Buchungsseite gibt es nicht (mehr).'); return c; };
+route('GET', '/termin/:slug', ({ params, query, res }) => {
+  const cal = pubCal(params.slug);
+  send(res, 200, renderBookingPage(cal, getSettings(db), { ref: query.b || '' }), 'text/html; charset=utf-8'); return null;
+}, { pub: true });
+route('GET', '/api/public/calendars/:slug', ({ params }) => {
+  const c = pubCal(params.slug);
+  return { name: c.name, description: c.description, duration: c.duration, location: c.location, days: availableDays(db, c) };
+}, { pub: true });
+route('GET', '/api/public/calendars/:slug/slots', ({ params, query }) => ({ slots: slotsFor(db, pubCal(params.slug), String(query.date || '')) }), { pub: true });
+route('POST', '/api/public/book', async ({ body, req }) => {
+  if (body.website_hp) throw new HttpError(400, 'Ungültig');
+  const cal = pubCal(body.slug);
+  need(body.name, 'Bitte den Namen angeben'); need(body.email, 'Bitte eine E-Mail-Adresse angeben');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) throw new HttpError(400, 'Bitte eine gültige E-Mail-Adresse angeben');
+  if (!body.consent) throw new HttpError(400, 'Bitte der Verarbeitung der Daten zustimmen');
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (!rateLimit('b:' + createHash('sha256').update(ip).digest('hex').slice(0, 16), 5, 3600e3)) throw new HttpError(429, 'Zu viele Anfragen – bitte später erneut versuchen.');
+  // Kontakt finden: über den Berichtslink (?b=…), die E-Mail-Adresse oder neu anlegen
+  const audit = body.ref ? one('SELECT * FROM audits WHERE token = ?', body.ref) : null;
+  const prospect = audit?.prospect_id ? one('SELECT * FROM prospects WHERE id = ?', audit.prospect_id) : null;
+  let contact = prospect?.contact_id ? one('SELECT * FROM contacts WHERE id = ?', prospect.contact_id) : null;
+  contact ||= one('SELECT * FROM contacts WHERE lower(email) = lower(?)', body.email.trim());
+  let isNew = false;
+  if (!contact) {
+    const id = insert('contacts', { name: body.name.trim(), email: body.email.trim(), phone: body.phone || '', company: body.company || prospect?.name || '', tags: 'terminbuchung',
+      notes: `Termin über Buchungsseite „${cal.name}“ gebucht. Einwilligung zur Datenverarbeitung: ${localStamp()}` });
+    contact = one('SELECT * FROM contacts WHERE id = ?', id); isNew = true;
+  } else if (!contact.email || !contact.phone) {
+    update('contacts', contact.id, { email: contact.email || body.email.trim(), phone: contact.phone || body.phone || '' });
+  }
+  if (prospect && !prospect.contact_id) update('prospects', prospect.id, { contact_id: contact.id, status: 'im CRM' });
+  let opp = one(`SELECT * FROM opportunities WHERE contact_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`, contact.id);
+  let oppNew = false;
+  if (!opp && cal.create_lead) {
+    const p = one('SELECT * FROM pipelines ORDER BY id LIMIT 1'); const st = one('SELECT id FROM stages WHERE pipeline_id = ? ORDER BY position LIMIT 1', p.id);
+    const oid = insert('opportunities', { name: `${contact.company || contact.name} – ${cal.name}`, contact_id: contact.id, pipeline_id: p.id, stage_id: st?.id ?? null, company: contact.company || '', source: 'Terminbuchung', updated_at: localStamp() });
+    opp = one('SELECT * FROM opportunities WHERE id = ?', oid); oppNew = true;
+    if (prospect) update('prospects', prospect.id, { opportunity_id: oid });
+  }
+  const a = book(db, cal, { date: body.date, time: body.time, name: body.name.trim(), email: body.email.trim(), phone: body.phone || '', message: String(body.message || '').slice(0, 2000), contact_id: contact.id, opportunity_id: opp?.id ?? null });
+  logActivity(db, { type: 'termin', title: `Termin gebucht: ${cal.name}, ${formatDe(a.start_at)}`, body: a.message, contact_id: contact.id, opportunity_id: opp?.id });
+  if (isNew) contactCreated(contact.id);
+  if (oppNew) emit(db, 'opportunity.created', { opportunity_id: opp.id });
+  emit(db, 'appointment.booked', { appointment_id: a.id, calendar_id: cal.id, contact_id: contact.id, opportunity_id: opp?.id ?? null, audit_id: audit?.id ?? null });
+  const mailed = await confirmAppointment(a, cal);
+  notify(db, { title: `📅 Neuer Termin: ${a.name}`, body: `${cal.name} · ${formatDe(a.start_at)}`, link: `#/kontakte/${contact.id}`, email: !mailed }).catch(() => {});
+  return { ok: true, when: formatDe(a.start_at), mailed, cancel_url: `/termin/absagen/${a.token}` };
+}, { pub: true });
+route('GET', '/termin/absagen/:token', ({ params, res }) => {
+  const a = one(`${apptQuery} WHERE a.token = ?`, params.token); if (!a) throw new HttpError(404, 'Termin nicht gefunden');
+  send(res, 200, renderCancelPage(a, getSettings(db)), 'text/html; charset=utf-8'); return null;
+}, { pub: true });
+route('POST', '/api/public/cancel/:token', async ({ params }) => {
+  const a = one('SELECT * FROM appointments WHERE token = ?', params.token); if (!a) throw new HttpError(404, 'Termin nicht gefunden');
+  if (a.status === 'abgesagt') return { ok: true, already: true };
+  if (toDate(a.start_at) < new Date()) throw new HttpError(400, 'Der Termin liegt in der Vergangenheit.');
+  update('appointments', a.id, { status: 'abgesagt' });
+  const cal = a.calendar_id ? one('SELECT * FROM calendars WHERE id = ?', a.calendar_id) : null;
+  if (a.contact_id) logActivity(db, { type: 'termin', title: `Termin vom Kunden abgesagt: ${formatDe(a.start_at)}`, contact_id: a.contact_id, opportunity_id: a.opportunity_id });
+  await confirmAppointment({ ...a, status: 'abgesagt' }, cal, 'cancel');
+  notify(db, { title: `❌ Termin abgesagt: ${a.name}`, body: formatDe(a.start_at), link: a.contact_id ? `#/kontakte/${a.contact_id}` : '#/kalender', email: true }).catch(() => {});
+  emit(db, 'appointment.cancelled', { appointment_id: a.id, calendar_id: a.calendar_id, contact_id: a.contact_id });
+  return { ok: true, rebook: cal ? `/termin/${cal.slug}` : null };
+}, { pub: true });
+
+// ---------- Automationen ----------
+route('GET', '/api/automations/meta', () => ({ triggers: TRIGGERS, steps: STEP_TYPES, presets: presets(db) }));
+crud('/api/automations', 'automations', ['name', 'trigger', 'trigger_config', 'steps', 'active'], {
+  required: ['name', 'trigger'], order: 'id DESC',
+  prepare: (d) => {
+    if (d.trigger !== undefined && !TRIGGERS[d.trigger]) throw new HttpError(400, 'Unbekannter Auslöser');
+    for (const k of ['trigger_config', 'steps']) if (d[k] !== undefined && typeof d[k] !== 'string') d[k] = JSON.stringify(d[k]);
+    return d;
+  },
+  list: () => all(`SELECT a.*, (SELECT COUNT(*) FROM automation_runs r WHERE r.automation_id = a.id AND r.status = 'wartet') waiting,
+    (SELECT COUNT(*) FROM automation_runs r WHERE r.automation_id = a.id AND r.status = 'fehler') errors FROM automations a ORDER BY a.id DESC`),
+});
+route('POST', '/api/automations/preset', ({ body }) => {
+  const p = presets(db).find((x) => x.key === body.key); if (!p) throw new HttpError(404, 'Vorlage nicht gefunden');
+  const id = insert('automations', { name: p.name, trigger: p.trigger, trigger_config: JSON.stringify(p.trigger_config), steps: JSON.stringify(p.steps), active: body.active === false ? 0 : 1 });
+  return one('SELECT * FROM automations WHERE id = ?', id);
+});
+route('GET', '/api/automations/:id/runs', ({ params }) => all('SELECT * FROM automation_runs WHERE automation_id = ? ORDER BY id DESC LIMIT 50', params.id));
+route('POST', '/api/automations/:id/test', async ({ params, body }) => {
+  const a = one('SELECT * FROM automations WHERE id = ?', params.id); if (!a) throw new HttpError(404, 'Nicht gefunden');
+  need(body.contact_id, 'Bitte einen Kontakt zum Testen wählen');
+  const runId = await startRun(db, a, { contact_id: Number(body.contact_id), _test: true });
+  return one('SELECT * FROM automation_runs WHERE id = ?', runId);
+});
+
+// ---------- Einstellungen: Tests ----------
+route('POST', '/api/settings/test-mail', async ({ body }) => {
+  const s = getSettings(db); const to = body.to || s.notify_email || s.agency_email;
+  need(to, 'Bitte eine Empfängeradresse angeben');
+  await sendMail(db, { to, subject: 'Test aus Webhafen OS ✅', text: 'Der E-Mail-Versand funktioniert.\n\nViele Grüße\nWebhafen OS' });
+  return { ok: true, to };
+});
+route('POST', '/api/settings/test-ntfy', async () => {
+  if (!getSettings(db).ntfy_url) throw new HttpError(400, 'Keine ntfy-Adresse eingetragen');
+  await notify(db, { title: 'Test aus Webhafen OS ✅', body: 'Benachrichtigungen aufs Handy funktionieren.', link: '#/heute' });
+  return { ok: true };
+});
 
 // ---------- Statische Dateien ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
@@ -515,7 +853,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (!PASSWORD) console.warn('⚠  ADMIN_PASSWORD ist nicht gesetzt – die App ist ohne Login erreichbar. Nur lokal so betreiben!');
   });
   let busy = false;
-  setInterval(async () => { if (busy) return; busy = true; try { await runScheduler(db); await runDueAgents(db); } catch (e) { console.error('Planer:', e); } busy = false; }, 30_000);
+  setInterval(async () => { if (busy) return; busy = true; try {
+      await runScheduler(db); await runDueAgents(db); await resumeDue(db);
+      if (mailReady(db)) await sendReminders(db, (a, cal) => confirmAppointment(a, cal, 'reminder'));
+    } catch (e) { console.error('Planer:', e); } busy = false; }, 30_000);
   const feeds = async () => { for (const f of all('SELECT * FROM rss_feeds')) await checkFeed(db, f); };
   setInterval(() => feeds().catch((e) => console.error('RSS:', e)), 30 * 60_000);
 }

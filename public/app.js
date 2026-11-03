@@ -63,15 +63,15 @@ const TABS = {
   social: [['', 'Planer'], ['kalender', 'Kalender'], ['konten', 'Konten'], ['evergreen', 'Evergreen'], ['rss', 'RSS-Feeds'], ['csv', 'CSV-Import']],
   affiliate: [['', 'Dashboard'], ['kampagnen', 'Kampagnen'], ['partner', 'Affiliates'], ['provisionen', 'Provisionen']],
 };
-const TITLES = { dashboard: 'Übersicht', kontakte: 'Kontakte', leads: 'Leads', social: 'Social Planner', affiliate: 'Affiliate-Manager', links: 'Trigger-Links', audits: 'Akquise', einstellungen: 'Einstellungen' };
+const TITLES = { heute: 'Heute', dashboard: 'Heute', aufgaben: 'Aufgaben', kalender: 'Kalender', automationen: 'Automationen', kontakte: 'Kontakte', leads: 'Leads', social: 'Social Planner', affiliate: 'Affiliate-Manager', links: 'Trigger-Links', audits: 'Akquise', einstellungen: 'Einstellungen' };
 async function render() {
-  const [sec = 'dashboard', sub = '', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
+  const [sec = 'heute', sub = '', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
   $$('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.s === sec));
   $('#title').textContent = TITLES[sec] || '';
   $('#tabs').innerHTML = (TABS[sec] || []).map(([k, t]) => `<a href="#/${sec}${k ? '/' + k : ''}" class="${k === sub ? 'on' : ''}">${t}</a>`).join('');
-  $('.side').classList.remove('open'); if (!$('#modal').hidden) closeModal();
+  $('.side').classList.remove('open'); if (!$('#modal').hidden) closeModal(); $('#bellMenu').hidden = true;
   const v = $('#view'); v.innerHTML = '<p class="sub">Lädt …</p>';
-  try { await (VIEWS[sec] || VIEWS.dashboard)(v, sub, rest); } catch (er) { v.innerHTML = `<div class="card bad">${e(er.message)}</div>`; }
+  try { await (VIEWS[sec] || VIEWS.heute)(v, sub, rest); } catch (er) { v.innerHTML = `<div class="card bad">${e(er.message)}</div>`; }
 }
 window.addEventListener('hashchange', render);
 $('#menu').onclick = () => $('.side').classList.toggle('open');
@@ -89,38 +89,17 @@ $('#logout').onclick = async () => { await POST('/api/logout'); location.reload(
   $('#logout').hidden = !s.passwordSet;
   SETTINGS = await GET('/api/settings');
   if (SETTINGS.brand_color) document.documentElement.style.setProperty('--accent', SETTINGS.brand_color);
-  $('#app').hidden = false; render();
+  $('#app').hidden = false; render(); refreshBell();
 })();
 
-// ===== Übersicht =====
-VIEWS.dashboard = async (v) => {
-  const d = await GET('/api/dashboard');
-  v.innerHTML = `
-  ${!SETTINGS.agency_name ? `<div class="card mb" style="border-color:var(--accent)">👋 Willkommen! Trage zuerst unter <a href="#/einstellungen">Einstellungen</a> deine Agentur-Daten ein – sie erscheinen in den Website-Check-Berichten.</div>` : ''}
-  <div class="grid g4">
-    <div class="card kpi"><div class="l">Pipeline-Potenzial</div><div class="v">${eur(d.forecast.max_potential)}</div><div class="s">${d.forecast.open_count} offene Leads</div></div>
-    <div class="card kpi"><div class="l">Erwartete Einnahmen</div><div class="v">${eur(d.forecast.expected)}</div><div class="s">gewichtet nach Wahrscheinlichkeit</div></div>
-    <div class="card kpi"><div class="l">Gewonnen</div><div class="v good">${eur(d.forecast.won)}</div><div class="s">${d.contacts} Kontakte gesamt</div></div>
-    <div class="card kpi"><div class="l">Geplante Beiträge</div><div class="v">${d.posts.scheduled || 0}</div><div class="s">${d.posts.published || 0} veröffentlicht · ${(d.posts.failed || 0) + (d.posts.manual || 0)} mit Handlungsbedarf</div></div>
-  </div>
-  <div class="grid g3 mt">
-    <div class="card"><div class="row between mb"><h3>Neueste Leads</h3><a href="#/leads">Alle</a></div>
-      ${d.recentOpps.length ? `<table>${d.recentOpps.map((o) => `<tr><td>${e(o.name)}<div class="small sub">${e(o.stage || '')}</div></td><td>${badge(o.status, STATUS)}</td><td class="num">${eur(o.value)}</td></tr>`).join('')}</table>` : '<p class="sub">Noch keine Leads.</p>'}</div>
-    <div class="card"><div class="row between mb"><h3>Nächste Beiträge</h3><a href="#/social">Planer</a></div>
-      ${d.upcoming.length ? d.upcoming.map((p) => `<div class="mb"><div class="small sub">${dt(p.scheduled_at)}</div>${e(p.content.slice(0, 90))}</div>`).join('') : '<p class="sub">Nichts geplant.</p>'}</div>
-    <div class="card"><div class="row between mb"><h3>Letzte Website-Checks</h3><a href="#/audits">Alle</a></div>
-      ${d.audits.length ? `<table>${d.audits.map((a) => `<tr><td><a href="#/audits/${a.id}">${e(a.business_name)}</a></td><td class="num ${a.score >= 80 ? 'good' : a.score >= 50 ? 'warn' : 'bad'}">${a.score}%</td></tr>`).join('')}</table>` : '<p class="sub">Noch keine Checks.</p>'}
-      <div class="mt small sub">Affiliate-Umsatz: <b>${eur(d.affiliate.revenue)}</b> · offene Provisionen: <b>${eur(d.affiliate.owed)}</b></div></div>
-  </div>`;
-};
-
 // ===== Kontakte =====
-VIEWS.kontakte = async (v) => {
-  const list = await GET('/api/contacts');
+VIEWS.kontakte = async (v, sub) => {
+  if (/^\d+$/.test(sub)) return contactDetail(v, sub);
+  const list = await contactsList(true);
   const draw = (q = '') => {
     const rows = list.filter((c) => !q || JSON.stringify(c).toLowerCase().includes(q.toLowerCase()));
     $('#ct').innerHTML = rows.length ? `<table><tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Telefon</th><th>Tags</th><th></th></tr>${rows.map((c) => `<tr>
-      <td><b>${e(c.name)}</b></td><td>${e(c.company)}</td><td>${c.email ? `<a href="mailto:${e(c.email)}">${e(c.email)}</a>` : ''}</td><td>${c.phone ? `<a href="tel:${e(c.phone)}">${e(c.phone)}</a>` : ''}</td>
+      <td><a href="#/kontakte/${c.id}"><b>${e(c.name)}</b></a></td><td>${e(c.company)}</td><td>${c.email ? `<a href="mailto:${e(c.email)}">${e(c.email)}</a>` : ''}</td><td>${c.phone ? `<a href="tel:${e(c.phone)}">${e(c.phone)}</a>` : ''}</td>
       <td>${(c.tags || '').split(',').filter(Boolean).map((t) => `<span class="tag">${e(t.trim())}</span>`).join('')}</td>
       <td class="num"><button class="btn sm" data-edit="${c.id}">Bearbeiten</button></td></tr>`).join('')}</table>` : '<p class="sub">Keine Kontakte gefunden.</p>';
     $$('[data-edit]').forEach((b) => (b.onclick = () => contactModal(list.find((c) => c.id == b.dataset.edit))));
@@ -139,7 +118,7 @@ function contactModal(c) {
   modal(c.id ? 'Kontakt bearbeiten' : 'Neuer Kontakt', `<form class="form">${field('Name *', 'name', c.name, 'text', 'required')}${field('Firma', 'company', c.company)}
     ${field('E-Mail', 'email', c.email, 'email')}${field('Telefon', 'phone', c.phone, 'tel')}${field('Tags (mit Komma getrennt)', 'tags', c.tags)}<span></span>${field('Notizen', 'notes', c.notes, 'textarea')}
     <div class="actions">${c.id ? '<button type="button" class="btn danger" id="del">Löschen</button><span class="grow"></span>' : ''}<button type="button" class="btn" data-close>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`,
-  async (d) => { await (c.id ? PUT('/api/contacts/' + c.id, d) : POST('/api/contacts', d)); toast('Gespeichert'); render(); });
+  async (d) => { await (c.id ? PUT('/api/contacts/' + c.id, d) : POST('/api/contacts', d)); CONTACTS_CACHE = null; toast('Gespeichert'); render(); });
   if (c.id) $('#del').onclick = safe(async () => { if (confirm('Kontakt löschen?')) { await DEL('/api/contacts/' + c.id); closeModal(); render(); } });
 }
 
@@ -242,6 +221,7 @@ async function oppModal(o) {
     ${field('Tags (mit Komma getrennt)', 'tags', o.tags)}
     ${field('Notizen', 'notes', o.notes, 'textarea')}
     ${o.slip_count ? `<p class="full small warn">⚠ Abschlussdatum wurde ${o.slip_count}× verschoben (insgesamt ${o.slip_days} Tage).</p>` : ''}
+    ${o.id && o.contact_id ? `<div class="full row small"><a href="#/kontakte/${o.contact_id}">→ Kontakt & Verlauf öffnen</a><a href="#" id="oTask">+ Aufgabe zu diesem Lead</a></div>` : ''}
     <div class="actions">${o.id ? '<button type="button" class="btn danger" id="del">Löschen</button><span class="grow"></span>' : ''}<button type="button" class="btn" data-close>Abbrechen</button><button class="btn primary">${o.id ? 'Speichern' : 'Erstellen'}</button></div></form>`,
   async (d) => {
     if (!d.contact_id) delete d.contact_id; else { delete d.contact_name; }
@@ -251,6 +231,7 @@ async function oppModal(o) {
   const cs = $('[name=contact_id]', body); const toggle = () => ($('#newC').hidden = !!cs.value); cs.onchange = toggle; toggle();
   $('#pSel').onchange = (ev) => { const p = PIPES.find((x) => x.id == ev.target.value); $('#sSel').innerHTML = stageOpts(p).map(([v, t]) => `<option value="${v}">${e(t)}</option>`).join(''); };
   if (o.id) $('#del').onclick = safe(async () => { if (confirm('Lead löschen?')) { await DEL('/api/opportunities/' + o.id); closeModal(); render(); } });
+  if ($('#oTask')) $('#oTask').onclick = (ev) => { ev.preventDefault(); taskModal({}, { contact_id: o.contact_id, opportunity_id: o.id, title: `Nachfassen: ${o.name}` }); };
 }
 
 async function leadsForecast(v) {
@@ -915,10 +896,419 @@ async function auditDetail(v, id) {
     finally { if ($('#hgo')) { $('#hgo').disabled = false; $('#hgo').textContent = '🔍 Lokalen Scan ausführen'; } } });
 }
 
+// ===== Benachrichtigungen (Glocke) =====
+const NOTE_ICON = { notiz: '📝', anruf: '📞', email: '✉️', termin: '📅', aufgabe: '✅', status: '🔀', bericht: '👁', treffen: '🤝' };
+async function refreshBell() {
+  try { const n = await GET('/api/notifications'); $('#bellN').textContent = n.unread > 9 ? '9+' : n.unread; $('#bellN').hidden = !n.unread; return n; } catch { return null; }
+}
+$('#bell').onclick = safe(async (ev) => {
+  ev.stopPropagation(); const m = $('#bellMenu');
+  if (!m.hidden) { m.hidden = true; return; }
+  const n = await refreshBell(); if (!n) return;
+  m.innerHTML = `<div class="row between"><b>Benachrichtigungen</b><a href="#/einstellungen" class="small">Aufs Handy …</a></div>
+    ${n.items.length ? n.items.map((x) => `<a class="note ${x.read ? '' : 'unread'}" href="${e(x.link || '#/heute')}"><b>${e(x.title)}</b>${x.body ? `<span>${e(x.body)}</span>` : ''}<small>${dt(x.created_at)}</small></a>`).join('') : '<p class="sub">Noch keine Benachrichtigungen.</p>'}`;
+  m.hidden = false;
+  if (n.unread) { await POST('/api/notifications/read', {}); $('#bellN').hidden = true; }
+});
+document.addEventListener('click', (ev) => { if (!ev.target.closest('.bell-wrap')) $('#bellMenu').hidden = true; });
+setInterval(refreshBell, 60000);
+
+// ===== Gemeinsame Bausteine =====
+let CONTACTS_CACHE = null;
+const contactsList = async (fresh = false) => (CONTACTS_CACHE = fresh || !CONTACTS_CACHE ? await GET('/api/contacts') : CONTACTS_CACHE);
+const contactOpts = (list) => [['', '— kein Kontakt —'], ...list.map((c) => [c.id, c.name + (c.company && c.company !== c.name ? ` (${c.company})` : '')])];
+const todayStr = () => new Date().toLocaleDateString('sv-SE');
+const plusDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toLocaleDateString('sv-SE'); };
+const isOverdue = (t) => t.due_at && t.due_at < (t.due_at.length > 10 ? new Date().toLocaleString('sv-SE').slice(0, 16) : todayStr());
+function dueText(s) {
+  if (!s) return 'ohne Termin';
+  const d = s.slice(0, 10); const time = s.slice(11, 16);
+  const label = d === todayStr() ? 'heute' : d === plusDays(1) ? 'morgen' : d === plusDays(-1) ? 'gestern' : new Date(d + 'T12:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  return label + (time && time !== '00:00' ? ` ${time}` : '');
+}
+function taskRow(t) {
+  const link = t.contact_id ? `<a href="#/kontakte/${t.contact_id}">${e(t.contact_name)}</a>` : t.prospect_id ? `<a href="#/audits">${e(t.prospect_name || 'Interessent')}</a>` : '';
+  return `<div class="task ${t.status === 'erledigt' ? 'done' : ''}"><input type="checkbox" data-done="${t.id}" ${t.status === 'erledigt' ? 'checked' : ''} aria-label="Erledigt">
+    <div class="grow"><a href="#" data-task="${t.id}" class="tt">${t.priority === 'hoch' ? '<span class="prio">!</span> ' : ''}${e(t.title)}</a>
+    <div class="small sub"><span class="${t.status !== 'erledigt' && isOverdue(t) ? 'bad' : ''}">${e(dueText(t.due_at))}</span>${link ? ' · ' + link : ''}${t.source === 'automation' ? ' · ⚡' : ''}</div></div></div>`;
+}
+function bindTasks(root, tasks, after = render) {
+  $$('[data-done]', root).forEach((c) => (c.onchange = safe(async () => {
+    await PUT('/api/tasks/' + c.dataset.done, { status: c.checked ? 'erledigt' : 'offen' });
+    c.closest('.task').classList.toggle('done', c.checked); if (c.checked) toast('Erledigt ✔'); setTimeout(after, 500);
+  })));
+  $$('[data-task]', root).forEach((a) => (a.onclick = (ev) => { ev.preventDefault(); taskModal(tasks.find((t) => t.id == a.dataset.task), {}, after); }));
+}
+async function taskModal(t = {}, preset = {}, after = render) {
+  const contacts = await contactsList();
+  const due = t.due_at || preset.due_at || '';
+  modal(t.id ? 'Aufgabe bearbeiten' : 'Neue Aufgabe', `<form class="form"><div class="full">${field('Was ist zu tun? *', 'title', t.title || preset.title || '', 'text', 'required autofocus')}</div>
+    ${field('Fällig am', 'due_date', due.slice(0, 10), 'date')}${field('Uhrzeit (optional)', 'due_time', due.slice(11, 16), 'time')}
+    ${select('Priorität', 'priority', [['normal', 'Normal'], ['hoch', 'Hoch']], t.priority || 'normal')}<span></span>
+    <div class="full">${select('Kontakt', 'contact_id', contactOpts(contacts), t.contact_id ?? preset.contact_id ?? '')}</div>
+    ${field('Notizen', 'notes', t.notes || '', 'textarea')}
+    <div class="actions">${t.id ? '<button type="button" class="btn danger" id="tdel">Löschen</button><span class="grow"></span>' : ''}<button type="button" class="btn" data-close>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`,
+  async (d) => {
+    d.due_at = d.due_date ? (d.due_time ? `${d.due_date} ${d.due_time}` : d.due_date) : null; delete d.due_date; delete d.due_time;
+    d.contact_id = d.contact_id ? Number(d.contact_id) : null; if (preset.opportunity_id && !t.id) d.opportunity_id = preset.opportunity_id;
+    await (t.id ? PUT('/api/tasks/' + t.id, d) : POST('/api/tasks', d)); toast('Aufgabe gespeichert'); after();
+  });
+  if (t.id) $('#tdel').onclick = safe(async () => { await DEL('/api/tasks/' + t.id); closeModal(); after(); });
+}
+function quickTaskForm(id) {
+  return `<form id="${id}" class="row quick"><input name="title" placeholder="Neue Aufgabe … (Enter)" required class="grow" style="width:auto">
+    <select name="when" style="width:auto"><option value="0">heute</option><option value="1">morgen</option><option value="7">in einer Woche</option><option value="">ohne Termin</option></select>
+    <button class="btn primary">+</button></form>`;
+}
+function bindQuickTask(id, preset = {}, after = render) {
+  $('#' + id).onsubmit = safe(async (ev) => {
+    ev.preventDefault(); const d = formData(ev.target);
+    await POST('/api/tasks', { title: d.title, due_at: d.when === '' ? null : plusDays(Number(d.when)), ...preset }); toast('Aufgabe angelegt'); after();
+  });
+}
+
+// ===== Heute =====
+VIEWS.dashboard = (v) => { location.hash = '#/heute'; };
+VIEWS.heute = async (v) => {
+  const d = await GET('/api/today');
+  const h = new Date().getHours(); const hello = h < 11 ? 'Guten Morgen' : h < 18 ? 'Guten Tag' : 'Guten Abend';
+  const allTasks = [...d.overdue, ...d.today, ...d.upcoming];
+  const apptRow = (a) => `<div class="appt" style="--c:${e(a.color || '#0B4AA0')}"><div class="when"><b>${a.start_at.slice(11)}</b><small>${e(dueText(a.start_at.slice(0, 10)))}</small></div>
+    <div class="grow"><b>${e(a.title)}</b><div class="small sub">${a.contact_id ? `<a href="#/kontakte/${a.contact_id}">${e(a.name || 'Kontakt')}</a>` : e(a.kind === 'blocker' ? 'Blocker' : a.name)}${a.location ? ' · ' + e(a.location) : ''}${a.phone ? ` · <a href="tel:${e(a.phone)}">${e(a.phone)}</a>` : ''}</div></div></div>`;
+  v.innerHTML = `${!SETTINGS.agency_name ? `<div class="card mb" style="border-color:var(--accent)">👋 Willkommen! Trage zuerst unter <a href="#/einstellungen">Einstellungen</a> deine Agentur-Daten und den E-Mail-Versand ein.</div>` : ''}
+  <div class="row mb"><div class="grow"><h2>${hello}!</h2><div class="sub">${new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })} · ${d.today.length + d.overdue.length} Aufgaben heute · ${d.appointments.filter((a) => a.start_at.startsWith(todayStr())).length} Termine</div></div>
+    <button class="btn" id="nAppt">📅 Termin</button><button class="btn" id="nLead">🎯 Lead</button></div>
+  <div class="grid today"><div>
+    <div class="card"><div class="row between mb"><h3>✅ Aufgaben</h3><a href="#/aufgaben">Alle</a></div>${quickTaskForm('qt')}
+      ${d.overdue.length ? `<h4 class="bad">Überfällig (${d.overdue.length})</h4>${d.overdue.map(taskRow).join('')}` : ''}
+      <h4>Heute</h4>${d.today.length ? d.today.map(taskRow).join('') : '<p class="sub small">Nichts mehr für heute 🎉</p>'}
+      ${d.upcoming.length ? `<h4>Demnächst</h4>${d.upcoming.map(taskRow).join('')}` : ''}</div>
+    <div class="card mt"><div class="row between mb"><h3>🔥 Heiße Leads</h3><a href="#/audits/analytics">Analytics</a></div>
+      ${d.hot.length || d.widget.length ? `${d.hot.map((x) => `<div class="hot"><div class="grow"><b>${e(x.business_name)}</b><div class="small sub">hat den Bericht ${x.views}× geöffnet · zuletzt ${dt(x.last_view)}</div></div>
+        <span class="num ${x.score >= 80 ? 'good' : x.score >= 50 ? 'warn' : 'bad'}"><b>${x.score}%</b></span>${x.contact_id ? `<a class="btn sm" href="#/kontakte/${x.contact_id}">Kontakt</a>` : `<a class="btn sm" href="#/audits/${x.audit_id}">Bericht</a>`}</div>`).join('')}
+        ${d.widget.map((w) => `<div class="hot"><div class="grow"><b>${e(w.business_name)}</b><div class="small sub">Website-Check über das Widget · ${e(w.name || w.email)} · ${dt(w.created_at)}</div></div><span class="num"><b>${w.score ?? '–'}%</b></span><a class="btn sm" href="#/audits/${w.audit_id}">Bericht</a></div>`).join('')}`
+        : '<p class="sub small">Sobald ein Interessent seinen Bericht öffnet oder das Widget nutzt, erscheint er hier.</p>'}
+      ${d.newProspects ? `<p class="small mt"><a href="#/audits">${d.newProspects} neue Interessenten</a> aus der Akquise warten auf dich.</p>` : ''}</div>
+  </div><div>
+    <div class="card"><div class="row between mb"><h3>📅 Termine</h3><a href="#/kalender">Kalender</a></div>${d.appointments.length ? d.appointments.map(apptRow).join('') : '<p class="sub small">Keine Termine in den nächsten 7 Tagen.</p>'}</div>
+    <div class="card mt kpis"><div><small>Pipeline</small><b>${eur(d.forecast.max_potential)}</b></div><div><small>Erwartet</small><b>${eur(d.forecast.expected)}</b></div><div><small>Gewonnen</small><b class="good">${eur(d.forecast.won)}</b></div><div><small>Offene Leads</small><b>${d.forecast.open_count}</b></div></div>
+    ${d.posts.length ? `<div class="card mt"><div class="row between mb"><h3>📣 Social</h3><a href="#/social">Planer</a></div>${d.posts.map((p) => `<div class="small mb">${badge(p.status, POST_STATUS)} ${e(p.content.slice(0, 70))}</div>`).join('')}</div>` : ''}
+  </div></div>`;
+  bindQuickTask('qt'); bindTasks(v, allTasks);
+  $('#nAppt').onclick = () => apptModal({});
+  $('#nLead').onclick = safe(async () => { await loadPipes(); oppModal({ pipeline_id: CUR_PIPE.id }); });
+};
+
+// ===== Aufgaben =====
+TABS.aufgaben = [['', 'Offen'], ['heute', 'Heute'], ['ueberfaellig', 'Überfällig'], ['woche', 'Diese Woche'], ['erledigt', 'Erledigt']];
+VIEWS.aufgaben = async (v, sub) => {
+  const q = sub === 'erledigt' ? '?status=erledigt' : sub ? `?scope=${sub}` : '';
+  const tasks = await GET('/api/tasks' + q);
+  v.innerHTML = `<div class="card">${sub === 'erledigt' ? '' : quickTaskForm('qt2')}
+    ${tasks.length ? tasks.map(taskRow).join('') : empty('✅', sub === 'erledigt' ? 'Noch nichts erledigt' : 'Alles erledigt', sub === 'erledigt' ? '' : 'Lege oben eine Aufgabe an – oder lass sie von Automationen anlegen.')}</div>`;
+  if (sub !== 'erledigt') bindQuickTask('qt2');
+  bindTasks(v, tasks);
+};
+
+// ===== Kontakt-Detail mit Verlauf =====
+async function contactDetail(v, id) {
+  const [d] = await Promise.all([GET(`/api/contacts/${id}/overview`), loadPipes()]);
+  const c = d.contact;
+  const openTasks = d.tasks.filter((t) => t.status !== 'erledigt');
+  v.innerHTML = `<div class="row mb"><a href="#/kontakte">‹ Kontakte</a></div>
+  <div class="grid detail"><div>
+    <div class="card"><div class="row between"><h2>${e(c.name)}</h2><button class="btn sm" id="cEdit">Bearbeiten</button></div>
+      ${c.company && c.company !== c.name ? `<div class="sub">${e(c.company)}</div>` : ''}
+      <div class="facts">${c.email ? `<a href="mailto:${e(c.email)}">✉ ${e(c.email)}</a>` : '<span class="sub">keine E-Mail</span>'}${c.phone ? `<a href="tel:${e(c.phone)}">📞 ${e(c.phone)}</a>` : ''}</div>
+      <div class="mt">${(c.tags || '').split(',').filter(Boolean).map((t) => `<span class="tag">${e(t.trim())}</span>`).join('')}</div>
+      ${c.notes ? `<p class="small sub" style="white-space:pre-wrap">${e(c.notes)}</p>` : ''}</div>
+    <div class="card mt"><div class="row between mb"><h3>🎯 Leads</h3><button class="btn sm" id="cLead">+ Lead</button></div>
+      ${d.opportunities.length ? d.opportunities.map((o) => `<a href="#" class="li" data-opp="${o.id}"><span class="grow"><b>${e(o.name)}</b><small class="sub">${e(o.pipeline_name)} › ${e(o.stage_name || '–')}</small></span>${badge(o.status, STATUS)}<b>${eur(o.value)}</b></a>`).join('') : '<p class="sub small">Noch kein Lead.</p>'}</div>
+    <div class="card mt"><div class="row between mb"><h3>📅 Termine</h3><button class="btn sm" id="cAppt">+ Termin</button></div>
+      ${d.appointments.length ? d.appointments.map((a) => `<div class="li"><span class="grow"><b>${e(dueText(a.start_at.slice(0, 10)))} ${a.start_at.slice(11)}</b><small class="sub">${e(a.calendar_name || a.title)}</small></span>${badge(a.status, APPT_STATUS)}</div>`).join('') : '<p class="sub small">Keine Termine.</p>'}</div>
+    ${d.prospects.length ? `<div class="card mt"><h3 class="mb">🔍 Akquise</h3>${d.prospects.map((p) => `<div class="li"><span class="grow"><b>${e(p.name)}</b><small class="sub">${e(SRC[p.source] || p.source)}</small></span>${p.audit_id ? `<a href="#/audits/${p.audit_id}">Bericht ${p.audit_score}%</a>` : ''}</div>`).join('')}</div>` : ''}
+  </div><div>
+    <div class="card actbar"><button class="btn" data-log="notiz">📝 Notiz</button><button class="btn" data-log="anruf">📞 Anruf</button><button class="btn" data-log="treffen">🤝 Treffen</button>
+      <button class="btn" id="cMail" ${c.email ? '' : 'disabled title="Keine E-Mail-Adresse"'}>✉️ E-Mail</button><button class="btn" id="cTask">✅ Aufgabe</button></div>
+    ${openTasks.length ? `<div class="card mt"><h3 class="mb">Offene Aufgaben</h3>${openTasks.map(taskRow).join('')}</div>` : ''}
+    <div class="card mt"><h3 class="mb">Verlauf</h3>${d.activities.length ? `<div class="timeline">${d.activities.map((a) => `<div class="ev2"><span class="ico2">${NOTE_ICON[a.type] || '•'}</span><div class="grow">
+      <b>${e(a.title)}</b>${a.opportunity_name ? ` <span class="sub small">· ${e(a.opportunity_name)}</span>` : ''}
+      ${a.body && a.body !== a.title ? `<div class="small body clamp" title="Klicken zum Auf-/Zuklappen">${e(a.body)}</div>` : ''}<small class="sub">${dt(a.created_at)}</small></div>
+      ${['notiz', 'anruf', 'treffen'].includes(a.type) ? `<button class="x" data-adel="${a.id}" title="Löschen">✕</button>` : ''}</div>`).join('')}</div>` : '<p class="sub small">Noch keine Einträge. Notizen, Anrufe, E-Mails, Termine und Statuswechsel landen automatisch hier.</p>'}</div>
+  </div></div>`;
+  const again = () => contactDetail(v, id);
+  $('#cEdit').onclick = () => contactModal(c);
+  $('#cLead').onclick = () => oppModal({ pipeline_id: CUR_PIPE.id, contact_id: c.id, company: c.company, name: `${c.company || c.name} – ` });
+  $$('[data-opp]').forEach((a) => (a.onclick = (ev) => { ev.preventDefault(); const o = d.opportunities.find((x) => x.id == a.dataset.opp); oppModal({ ...o }); }));
+  $('#cAppt').onclick = () => apptModal({}, { contact_id: c.id }, again);
+  $('#cTask').onclick = () => taskModal({}, { contact_id: c.id }, again);
+  bindTasks(v, openTasks, again);
+  $$('[data-log]').forEach((b) => (b.onclick = () => {
+    const t = b.dataset.log; const titles = { notiz: 'Notiz', anruf: 'Anruf protokollieren', treffen: 'Treffen protokollieren' };
+    modal(titles[t], `<form class="form">${t !== 'notiz' ? `<div class="full">${field('Kurzfassung', 'title', t === 'anruf' ? 'Telefonat' : 'Treffen', 'text', 'required')}</div>` : ''}
+      <label class="full">Text<textarea name="body" rows="6" required autofocus placeholder="${t === 'anruf' ? 'Was wurde besprochen? Nächste Schritte?' : ''}"></textarea></label>
+      <label class="check full"><input type="checkbox" name="follow"> Wiedervorlage in <input type="number" name="days" value="3" min="1" style="width:70px"> Tagen</label>
+      <div class="actions"><button class="btn primary">Speichern</button></div></form>`, async (f) => {
+      await POST('/api/activities', { type: t, title: f.title || f.body.slice(0, 80), body: f.body, contact_id: c.id });
+      if (f.follow) await POST('/api/tasks', { title: `Nachfassen: ${c.name}`, notes: f.body, due_at: plusDays(Number(f.days) || 3), contact_id: c.id });
+      toast('Gespeichert'); again();
+    });
+  }));
+  $('#cMail').onclick = () => {
+    if (!SETTINGS.mail_ready) return toast('Bitte zuerst unter Einstellungen den E-Mail-Versand einrichten', true);
+    modal(`E-Mail an ${c.name}`, `<form class="form"><div class="full">${field('Betreff *', 'subject', '', 'text', 'required')}</div>
+      <label class="full">Text<textarea name="body" rows="10" required>Hallo ${e(c.name.split(' ')[0])},\n\n\n\nViele Grüße\n${e(SETTINGS.agency_name || '')}</textarea></label>
+      <p class="full small sub">Wird über dein Postfach gesendet und im Verlauf gespeichert.</p><div class="actions"><button class="btn primary">Senden</button></div></form>`,
+    async (f) => { await POST(`/api/contacts/${c.id}/email`, f); toast('E-Mail gesendet'); again(); });
+  };
+  $$('[data-adel]').forEach((b) => (b.onclick = safe(async () => { if (confirm('Eintrag löschen?')) { await DEL('/api/activities/' + b.dataset.adel); again(); } })));
+  $$('.clamp', v).forEach((el) => (el.onclick = () => el.classList.toggle('open')));
+}
+
+// ===== Kalender =====
+const APPT_STATUS = { gebucht: 'Gebucht', erledigt: 'Erledigt', abgesagt: 'Abgesagt', 'nicht erschienen': 'Nicht erschienen' };
+TABS.kalender = [['', 'Termine'], ['seiten', 'Buchungsseiten'], ['abo', 'Kalender-Abo']];
+VIEWS.kalender = async (v, sub) => {
+  if (sub === 'seiten') return calendarsView(v);
+  if (sub === 'abo') return icsView(v);
+  const past = sessionStorage.getItem('apast') === '1';
+  const [list, cals] = await Promise.all([GET(`/api/appointments?${past ? `from=${plusDays(-60)}&to=${todayStr()}&all=1` : `from=${todayStr()}&to=${plusDays(60)}`}`), GET('/api/calendars')]);
+  const rows = past ? list.reverse() : list;
+  const byDay = {}; for (const a of rows) (byDay[a.start_at.slice(0, 10)] ||= []).push(a);
+  v.innerHTML = `<div class="row mb"><div class="tabs"><a href="#" data-past="0" class="${past ? '' : 'on'}">Kommende</a><a href="#" data-past="1" class="${past ? 'on' : ''}">Vergangene</a></div><span class="grow"></span>
+    ${cals.length ? `<button class="btn" id="cpy">🔗 Buchungslink kopieren</button>` : ''}<button class="btn" id="blk">⛔ Blocker</button><button class="btn primary" id="add">+ Termin</button></div>
+  ${!cals.length ? `<div class="card mb">💡 Lege unter <a href="#/kalender/seiten">Buchungsseiten</a> deine erste Seite an (z. B. „15-Min-Erstgespräch“) – Interessenten buchen dann selbst, und der Link erscheint in deinen Website-Check-Berichten.</div>` : ''}
+  ${rows.length ? Object.entries(byDay).map(([day, items]) => `<div class="card mb"><h3 class="mb">${new Date(day + 'T12:00').toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}${day === todayStr() ? ' <span class="badge open">heute</span>' : ''}</h3>
+    ${items.map((a) => `<div class="appt" style="--c:${e(a.color || (a.kind === 'blocker' ? '#94a3b8' : '#0B4AA0'))}"><div class="when"><b>${a.start_at.slice(11)}</b><small>bis ${a.end_at.slice(11)}</small></div>
+      <div class="grow"><b>${e(a.title)}</b><div class="small sub">${a.contact_id ? `<a href="#/kontakte/${a.contact_id}">${e(a.contact_name || a.name)}</a>` : e(a.name)}${a.email ? ' · ' + e(a.email) : ''}${a.phone ? ` · <a href="tel:${e(a.phone)}">${e(a.phone)}</a>` : ''}${a.location ? ' · 📍 ' + e(a.location) : ''}</div>
+      ${a.message ? `<div class="small" style="margin-top:4px">💬 ${e(a.message)}</div>` : ''}</div>${badge(a.status === 'gebucht' ? 'scheduled' : a.status === 'erledigt' ? 'published' : 'failed', { scheduled: APPT_STATUS[a.status], published: APPT_STATUS[a.status], failed: APPT_STATUS[a.status] })}
+      <button class="btn sm" data-ap="${a.id}">…</button></div>`).join('')}</div>`).join('') : empty('📅', past ? 'Keine vergangenen Termine' : 'Keine anstehenden Termine', 'Termine aus der Buchungsseite und eigene Einträge erscheinen hier.')}`;
+  $$('[data-past]').forEach((a) => (a.onclick = (ev) => { ev.preventDefault(); sessionStorage.setItem('apast', a.dataset.past); render(); }));
+  $('#add').onclick = () => apptModal({});
+  $('#blk').onclick = () => apptModal({ kind: 'blocker' });
+  if ($('#cpy')) $('#cpy').onclick = () => copy(`${baseUrl()}/termin/${(cals.find((c) => c.slug === SETTINGS.booking_slug) || cals[0]).slug}`);
+  $$('[data-ap]').forEach((b) => (b.onclick = () => apptActions(rows.find((a) => a.id == b.dataset.ap))));
+};
+function apptActions(a) {
+  const body = modal(a.title, `<p><b>${new Date(a.start_at.replace(' ', 'T')).toLocaleString('de-DE', { dateStyle: 'full', timeStyle: 'short' })}</b> – ${a.end_at.slice(11)} Uhr</p>
+    <p class="sub">${e([a.name, a.email, a.phone, a.location].filter(Boolean).join(' · '))}</p>${a.message ? `<p>💬 ${e(a.message)}</p>` : ''}
+    <div class="row mt">${a.status === 'gebucht' ? `<button class="btn" data-st="erledigt">✔ Erledigt</button><button class="btn" data-st="nicht erschienen">Nicht erschienen</button>
+      <button class="btn danger" data-st="abgesagt">Absagen</button>` : `<button class="btn" data-st="gebucht">Wieder auf „gebucht“</button>`}
+      <span class="grow"></span>${a.contact_id ? `<a class="btn" href="#/kontakte/${a.contact_id}">Kontakt</a>` : ''}<button class="btn" id="aEdit">Bearbeiten</button><button class="btn danger" id="aDel">🗑</button></div>`);
+  $$('[data-st]', body).forEach((b) => (b.onclick = safe(async () => {
+    const st = b.dataset.st; let notifyCustomer = false;
+    if (st === 'abgesagt' && a.email && SETTINGS.mail_ready) notifyCustomer = confirm('Absage per E-Mail an den Kunden schicken?');
+    await PUT('/api/appointments/' + a.id, { status: st, notify_customer: notifyCustomer }); closeModal(); toast('Gespeichert'); render();
+  })));
+  $('#aEdit').onclick = () => apptModal(a);
+  $('#aDel').onclick = safe(async () => { if (confirm('Termin endgültig löschen?')) { await DEL('/api/appointments/' + a.id); closeModal(); render(); } });
+}
+async function apptModal(a = {}, preset = {}, after = render) {
+  const [contacts, cals] = await Promise.all([contactsList(), GET('/api/calendars')]);
+  const blocker = a.kind === 'blocker';
+  const dur = a.start_at ? Math.round((new Date(a.end_at.replace(' ', 'T')) - new Date(a.start_at.replace(' ', 'T'))) / 60000) : 30;
+  const body = modal(a.id ? 'Termin bearbeiten' : blocker ? 'Zeit blockieren' : 'Neuer Termin', `<form class="form">
+    ${blocker ? '' : `<div class="full">${select('Kontakt', 'contact_id', contactOpts(contacts), a.contact_id ?? preset.contact_id ?? '')}</div>`}
+    <div class="full">${field(blocker ? 'Grund (nur für dich sichtbar)' : 'Titel', 'title', a.title || (blocker ? 'Blocker' : ''), 'text', blocker ? '' : 'placeholder="automatisch aus dem Kontakt"')}</div>
+    ${field('Datum *', 'date', a.start_at?.slice(0, 10) || todayStr(), 'date', 'required')}${field('Uhrzeit *', 'time', a.start_at?.slice(11) || '10:00', 'time', 'required step="300"')}
+    ${field('Dauer (Minuten)', 'duration', dur, 'number', 'min="5" step="5"')}${blocker || !cals.length ? '<span></span>' : select('Buchungsseite / Art', 'calendar_id', [['', '—'], ...cals.map((c) => [c.id, c.name])], a.calendar_id ?? '')}
+    ${blocker ? '' : `<div class="full">${field('Ort / Link', 'location', a.location || '', 'text', 'placeholder="z. B. Telefon, Google Meet-Link oder Adresse"')}</div>`}
+    ${blocker ? '' : field('Notiz', 'message', a.message || '', 'textarea')}
+    ${!a.id && !blocker ? `<label class="check full"><input type="checkbox" name="send_mail" ${SETTINGS.mail_ready ? '' : 'disabled'}> Bestätigung mit Kalendereintrag per E-Mail an den Kontakt${SETTINGS.mail_ready ? '' : ' (E-Mail-Versand nicht eingerichtet)'}</label>` : ''}
+    <div class="actions"><button type="button" class="btn" data-close>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`,
+  async (d) => {
+    d.kind = blocker ? 'blocker' : 'termin'; d.contact_id = d.contact_id ? Number(d.contact_id) : null; d.calendar_id = d.calendar_id ? Number(d.calendar_id) : null;
+    if (a.id) await PUT('/api/appointments/' + a.id, d); else { const r = await POST('/api/appointments', d); if (r.mailed) toast('Termin gespeichert, Bestätigung verschickt'); }
+    toast('Termin gespeichert'); after();
+  });
+  return body;
+}
+
+const DAYS = [[1, 'Montag'], [2, 'Dienstag'], [3, 'Mittwoch'], [4, 'Donnerstag'], [5, 'Freitag'], [6, 'Samstag'], [0, 'Sonntag']];
+async function calendarsView(v) {
+  const cals = await GET('/api/calendars');
+  v.innerHTML = `<div class="row mb"><p class="sub grow" style="margin:0">Buchungsseiten, auf denen Interessenten selbst einen freien Termin wählen. Bereits gebuchte Termine und Blocker werden automatisch ausgespart.</p><button class="btn primary" id="add">+ Buchungsseite</button></div>
+  ${cals.length ? `<div class="grid g2">${cals.map((c) => `<div class="card" style="border-top:4px solid ${e(c.color)}"><div class="row between"><h3>${e(c.name)}</h3>${c.active ? '<span class="badge published">aktiv</span>' : '<span class="badge">pausiert</span>'}</div>
+    <p class="sub">${c.duration} Minuten · ${e(c.location || 'Ort folgt')} · ${Object.entries(J(c.availability, {})).filter(([, r]) => r.length).map(([d]) => WD[d]).join(', ')}</p>
+    <div class="code small">${e(baseUrl())}/termin/${e(c.slug)}</div>
+    <div class="row mt"><button class="btn sm" data-copy="${e(baseUrl() + '/termin/' + c.slug)}">📋 Link kopieren</button><a class="btn sm" href="/termin/${e(c.slug)}" target="_blank">↗ Ansehen</a><button class="btn sm" data-ed="${c.id}">Bearbeiten</button>
+    ${SETTINGS.booking_slug === c.slug ? '<span class="badge won">in Berichten</span>' : `<button class="btn sm" data-rep="${e(c.slug)}">In Berichten verwenden</button>`}</div></div>`).join('')}</div>`
+    : empty('📅', 'Noch keine Buchungsseite', 'Zum Beispiel „Kostenloses 15-Minuten-Erstgespräch“ – der Link kommt in deine Website-Check-Berichte, E-Mails und auf web-hafen.de.')}`;
+  $('#add').onclick = () => calModal({ name: 'Kostenloses Erstgespräch', duration: 15, buffer: 15, slot_step: 15, min_notice_hours: 12, max_days: 30, reminder_hours: 24, create_lead: 1, active: 1, color: '#0B4AA0',
+    location: 'Telefon – wir rufen Sie an', description: 'In 15 Minuten gehen wir gemeinsam Ihre Website und Ihr Google-Profil durch – kostenlos und unverbindlich.' });
+  $$('[data-ed]').forEach((b) => (b.onclick = () => calModal(cals.find((c) => c.id == b.dataset.ed))));
+  $$('[data-copy]').forEach((b) => (b.onclick = () => copy(b.dataset.copy)));
+  $$('[data-rep]').forEach((b) => (b.onclick = safe(async () => { SETTINGS = { ...SETTINGS, ...(await PUT('/api/settings', { booking_slug: b.dataset.rep })) }; toast('Berichte verlinken jetzt auf diese Buchungsseite'); render(); })));
+}
+function calModal(c) {
+  const av = J(c.availability, null) || { 1: [['09:00', '17:00']], 2: [['09:00', '17:00']], 3: [['09:00', '17:00']], 4: [['09:00', '17:00']], 5: [['09:00', '15:00']] };
+  const rangeText = (r) => (r || []).map(([a, b]) => `${a}-${b}`).join(', ');
+  modal(c.id ? 'Buchungsseite bearbeiten' : 'Neue Buchungsseite', `<form class="form">${field('Name *', 'name', c.name, 'text', 'required')}${field('Adresse (Slug)', 'slug', c.slug || '', 'text', 'placeholder="automatisch aus dem Namen"')}
+    <label class="full">Beschreibung<textarea name="description" rows="2">${e(c.description || '')}</textarea></label>
+    ${field('Dauer (Minuten)', 'duration', c.duration, 'number', 'min="5" step="5"')}${field('Puffer vor/nach (Minuten)', 'buffer', c.buffer, 'number', 'min="0" step="5"')}
+    ${field('Startzeiten alle … Minuten', 'slot_step', c.slot_step, 'number', 'min="5" step="5"')}${field('Frühestens … Stunden vorher', 'min_notice_hours', c.min_notice_hours, 'number', 'min="0"')}
+    ${field('Höchstens … Tage im Voraus', 'max_days', c.max_days, 'number', 'min="1" max="365"')}${field('Erinnerung … Stunden vorher (0 = aus)', 'reminder_hours', c.reminder_hours, 'number', 'min="0"')}
+    <div class="full">${field('Ort / Link', 'location', c.location || '', 'text', 'placeholder="Telefon, Videocall-Link oder Adresse"')}</div>
+    <h3>Verfügbarkeit</h3><div class="full avail">${DAYS.map(([d, n]) => `<label class="check"><input type="checkbox" data-on="${d}" ${(av[d] || []).length ? 'checked' : ''}> <span style="width:100px">${n}</span>
+      <input data-r="${d}" value="${e(rangeText(av[d]) || '09:00-17:00')}" placeholder="09:00-12:00, 13:00-17:00" style="max-width:260px"></label>`).join('')}
+      <p class="small sub">Mehrere Zeitfenster mit Komma trennen, z. B. <code>09:00-12:00, 13:00-17:00</code> für eine Mittagspause.</p></div>
+    <label>Farbe<input type="color" name="color" value="${e(c.color || '#0B4AA0')}" style="height:40px"></label><span></span>
+    <label class="check"><input type="checkbox" name="create_lead" ${c.create_lead ? 'checked' : ''}> Bei Buchung automatisch Lead anlegen</label><label class="check"><input type="checkbox" name="active" ${c.active !== 0 ? 'checked' : ''}> Buchungsseite aktiv</label>
+    <div class="actions">${c.id ? '<button type="button" class="btn danger" id="cdel">Löschen</button><span class="grow"></span>' : ''}<button class="btn primary">Speichern</button></div></form>`,
+  async (d) => {
+    const availability = {};
+    for (const [day] of DAYS) {
+      if (!$(`[data-on="${day}"]`).checked) continue;
+      const ranges = $(`[data-r="${day}"]`).value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => x.split('-').map((y) => y.trim().padStart(5, '0')));
+      if (ranges.some((r) => r.length !== 2 || !/^\d\d:\d\d$/.test(r[0]) || !/^\d\d:\d\d$/.test(r[1]) || r[0] >= r[1])) throw new Error(`Zeitfenster für ${DAYS.find((x) => x[0] === day)[1]} ungültig (Format 09:00-17:00)`);
+      availability[day] = ranges;
+    }
+    for (const k of ['duration', 'buffer', 'slot_step', 'min_notice_hours', 'max_days', 'reminder_hours']) d[k] = Number(d[k]) || 0;
+    d.create_lead = d.create_lead ? 1 : 0; d.active = d.active ? 1 : 0; d.availability = availability; if (!d.slug) delete d.slug;
+    await (c.id ? PUT('/api/calendars/' + c.id, { ...d, id: c.id }) : POST('/api/calendars', d)); toast('Buchungsseite gespeichert'); render();
+  });
+  if (c.id) $('#cdel').onclick = safe(async () => { if (confirm('Buchungsseite löschen? Bestehende Termine bleiben erhalten.')) { await DEL('/api/calendars/' + c.id); closeModal(); render(); } });
+}
+async function icsView(v) {
+  const url = SETTINGS.ics_key ? `${baseUrl()}/kalender.ics?key=${SETTINGS.ics_key}` : '';
+  v.innerHTML = `<div class="grid g2"><div class="card"><h3>Termine im eigenen Kalender sehen</h3><p class="sub">Abonniere deine Webhafen-OS-Termine in Google Kalender, Apple Kalender oder Outlook – dann siehst du Buchungen auch auf dem Handy.</p>
+    ${url ? `<div class="code">${e(url)}</div><div class="row mt"><button class="btn primary" id="cp">Link kopieren</button><button class="btn" id="gen">Neuen Link erzeugen</button></div>
+      <p class="small warn mt">Der Link ist geheim – wer ihn kennt, sieht deine Termine.</p>` : '<button class="btn primary" id="gen">Abo-Link erzeugen</button>'}</div>
+    <div class="card"><h3>So geht's</h3><p><b>Google Kalender</b> (am Computer): links „Weitere Kalender“ → „+“ → „Per URL“ → Link einfügen.</p>
+    <p><b>iPhone / Mac</b>: Einstellungen → Kalender → Accounts → Account hinzufügen → Andere → „Kalenderabo hinzufügen“.</p>
+    <p><b>Outlook</b>: Kalender → „Kalender hinzufügen“ → „Aus dem Internet abonnieren“.</p>
+    <p class="small sub">Google aktualisiert abonnierte Kalender nur alle paar Stunden. Neue Buchungen meldet dir Webhafen OS deshalb zusätzlich per Benachrichtigung.</p></div></div>`;
+  if ($('#cp')) $('#cp').onclick = () => copy(url);
+  $('#gen').onclick = safe(async () => {
+    if (url && !confirm('Der alte Link funktioniert danach nicht mehr. Fortfahren?')) return;
+    const k = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    SETTINGS = { ...SETTINGS, ...(await PUT('/api/settings', { ics_key: k })) }; render();
+  });
+}
+
+// ===== Automationen =====
+let AMETA = null;
+const RUN_STATUS = { fertig: 'Fertig', wartet: 'Wartet', fehler: 'Fehler', beendet: 'Beendet', läuft: 'Läuft' };
+const RUN_BADGE = { fertig: 'published', wartet: 'scheduled', fehler: 'failed', beendet: 'draft', läuft: 'scheduled' };
+const VARS = ['kontakt.name', 'kontakt.vorname', 'kontakt.email', 'kontakt.telefon', 'kontakt.firma', 'lead.name', 'lead.wert', 'lead.phase', 'termin.datum', 'termin.uhrzeit', 'termin.ort', 'termin.absage_link', 'bericht.link', 'bericht.wertung', 'buchungslink', 'agentur.name', 'agentur.telefon', 'agentur.email', 'agentur.website'];
+function stepSummary(st) {
+  const t = AMETA.steps[st.type] || st.type;
+  if (st.type === 'wait') return `⏳ ${st.amount} ${({ minuten: 'Min.', stunden: 'Std.', tage: 'Tage' })[st.unit] || st.unit}`;
+  if (st.type === 'send_email') return `✉️ ${st.to === 'ich' ? 'an mich' : 'E-Mail'}`;
+  if (st.type === 'create_task') return '✅ Aufgabe';
+  if (st.type === 'notify') return '🔔 Benachrichtigung';
+  if (st.type === 'condition') return '❓ Bedingung';
+  return t;
+}
+VIEWS.automationen = async (v) => {
+  const [list, meta] = await Promise.all([GET('/api/automations'), AMETA ? AMETA : GET('/api/automations/meta')]); AMETA = meta;
+  const used = new Set(list.map((a) => a.name));
+  v.innerHTML = `<div class="card mb"><div class="row between"><div><h3>⚡ Automationen – Webhafen OS arbeitet für dich</h3><p class="sub small" style="margin:4px 0 0">Wenn etwas passiert (Auslöser), erledigt Webhafen OS die Schritte: E-Mails, Aufgaben, Benachrichtigungen, Wartezeiten, Phasenwechsel.</p></div>
+    <button class="btn primary" id="add">+ Neue Automation</button></div></div>
+  ${list.length ? `<div class="card mb tablewrap"><table><tr><th>Aktiv</th><th>Name</th><th>Auslöser</th><th>Schritte</th><th class="num">Läufe</th><th></th></tr>${list.map((a) => `<tr>
+    <td><label class="switch"><input type="checkbox" data-act="${a.id}" ${a.active ? 'checked' : ''}><i></i></label></td><td><b>${e(a.name)}</b>${a.errors ? ` <span class="badge failed">${a.errors} Fehler</span>` : ''}</td>
+    <td class="small">${e(meta.triggers[a.trigger]?.label || a.trigger)}</td><td class="small">${J(a.steps).map((s) => `<span class="tag">${e(stepSummary(s))}</span>`).join('')}</td>
+    <td class="num">${a.run_count}${a.waiting ? `<div class="small sub">${a.waiting} wartend</div>` : ''}</td>
+    <td class="num" style="white-space:nowrap"><button class="btn sm" data-log="${a.id}">Protokoll</button> <button class="btn sm" data-test="${a.id}">Testen</button> <button class="btn sm" data-ed="${a.id}">Bearbeiten</button></td></tr>`).join('')}</table></div>` : ''}
+  <h3 class="mb">Vorlagen – mit einem Klick startklar</h3><div class="grid g3">${meta.presets.map((p) => `<div class="card preset"><h3>${e(p.name)}</h3><p class="sub small">${e(p.description)}</p>
+    <div class="small">${e(meta.triggers[p.trigger].label)} → ${p.steps.map((s) => e(stepSummary(s))).join(' → ')}</div>
+    <div class="row mt">${used.has(p.name) ? '<span class="badge won">eingerichtet</span>' : `<button class="btn sm primary" data-preset="${p.key}">Aktivieren</button><button class="btn sm" data-prev="${p.key}">Ansehen & anpassen</button>`}</div></div>`).join('')}</div>
+  ${!SETTINGS.mail_ready ? '<p class="small warn mt">Hinweis: E-Mail-Schritte brauchen den E-Mail-Versand (Einstellungen → E-Mail-Versand).</p>' : ''}`;
+  $('#add').onclick = () => automationModal({ name: '', trigger: 'opportunity.created', trigger_config: {}, steps: [], active: 1 });
+  $$('[data-ed]').forEach((b) => (b.onclick = () => { const a = list.find((x) => x.id == b.dataset.ed); automationModal({ ...a, trigger_config: J(a.trigger_config, {}), steps: J(a.steps) }); }));
+  $$('[data-act]').forEach((c) => (c.onchange = safe(async () => { await PUT('/api/automations/' + c.dataset.act, { active: c.checked ? 1 : 0 }); toast(c.checked ? 'Aktiviert' : 'Pausiert'); })));
+  $$('[data-preset]').forEach((b) => (b.onclick = safe(async () => { await POST('/api/automations/preset', { key: b.dataset.preset }); toast('Automation aktiviert ⚡'); render(); })));
+  $$('[data-prev]').forEach((b) => (b.onclick = () => { const p = meta.presets.find((x) => x.key === b.dataset.prev); automationModal({ name: p.name, trigger: p.trigger, trigger_config: { ...p.trigger_config }, steps: JSON.parse(JSON.stringify(p.steps)), active: 1 }); }));
+  $$('[data-log]').forEach((b) => (b.onclick = safe(async () => {
+    const runs = await GET(`/api/automations/${b.dataset.log}/runs`);
+    modal('Protokoll', runs.length ? runs.map((r) => `<div class="card mb"><div class="row between"><b>${dt(r.created_at)}</b>${badge(RUN_BADGE[r.status], { [RUN_BADGE[r.status]]: RUN_STATUS[r.status] })}</div>
+      ${J(r.log).map((l) => `<div class="small ${l.ok ? '' : 'bad'}">${l.ok ? '✔' : '✕'} Schritt ${l.step + 1}: ${e(l.msg)}</div>`).join('')}${r.status === 'wartet' ? `<div class="small sub">Geht weiter am ${dt(r.resume_at)}</div>` : ''}</div>`).join('') : '<p class="sub">Noch keine Läufe.</p>', null, { wide: true });
+  })));
+  $$('[data-test]').forEach((b) => (b.onclick = safe(async () => {
+    const contacts = await contactsList();
+    modal('Automation testen', `<form class="form"><p class="full sub">Führt alle Schritte <b>wirklich</b> mit diesem Kontakt aus (E-Mails werden verschickt, Aufgaben angelegt). Wartezeiten laufen normal ab.</p>
+      <div class="full">${select('Kontakt', 'contact_id', contactOpts(contacts), '', 'required')}</div><div class="actions"><button class="btn primary">Jetzt ausführen</button></div></form>`, async (d) => {
+      const r = await POST(`/api/automations/${b.dataset.test}/test`, d);
+      toast(`${RUN_STATUS[r.status]}: ${J(r.log).map((l) => l.msg).join(' · ')}`, r.status === 'fehler'); render();
+    });
+  })));
+};
+async function automationModal(a) {
+  await loadPipes();
+  const cals = await GET('/api/calendars');
+  const stageOpts = [['', '— beliebige Phase —'], ...PIPES.flatMap((p) => p.stages.map((s) => [s.id, `${p.name} › ${s.name}`]))];
+  const steps = a.steps;
+  const trigOpts = Object.entries(AMETA.triggers).map(([k, t]) => [k, t.label]);
+  const cfgFields = (trig) => {
+    const f = AMETA.triggers[trig]?.fields || []; const c = a.trigger_config;
+    return [f.includes('pipeline_id') && !f.includes('stage_id') ? select('Pipeline', 'cfg_pipeline_id', [['', '— alle —'], ...PIPES.map((p) => [p.id, p.name])], c.pipeline_id ?? '') : '',
+      f.includes('stage_id') ? select('In Phase', 'cfg_stage_id', stageOpts, c.stage_id ?? '') : '',
+      f.includes('status') ? select('Status', 'cfg_status', [['', '— jeder —'], ['won', 'Gewonnen'], ['lost', 'Verloren'], ['abandoned', 'Aufgegeben'], ['open', 'Wieder offen']], c.status ?? '') : '',
+      f.includes('calendar_id') ? select('Buchungsseite', 'cfg_calendar_id', [['', '— alle —'], ...cals.map((k) => [k.id, k.name])], c.calendar_id ?? '') : '',
+      f.includes('tag') ? field('Tag', 'cfg_tag', c.tag || '', 'text', 'placeholder="z. B. vip"') : '',
+      f.includes('source') ? select('Quelle', 'cfg_source', [['', '— alle —'], ...Object.entries(SRC)], c.source ?? '') : ''].join('');
+  };
+  const stepFields = (st, i) => {
+    const F = (label, k, type = 'text', extra = '') => field(label, `s${i}_${k}`, st[k] ?? '', type, extra);
+    const S = (label, k, opts) => select(label, `s${i}_${k}`, opts, st[k] ?? '');
+    switch (st.type) {
+      case 'send_email': return `${S('An', 'to', [['kontakt', 'den Kontakt'], ['ich', 'mich'], ['adresse', 'andere Adresse']])}${F('Adresse (bei „andere“)', 'address', 'email')}<div class="full">${F('Betreff', 'subject')}</div><label class="full">Text<textarea name="s${i}_body" rows="6">${e(st.body || '')}</textarea></label>`;
+      case 'create_task': return `<div class="full">${F('Aufgabe', 'title')}</div>${F('Fällig in … Tagen', 'due_days', 'number', 'min="0"')}${F('und … Stunden', 'due_hours', 'number', 'min="0"')}
+        ${F('oder … Stunden vor dem Termin (nur bei Termin-Auslösern)', 'before_appt_hours', 'number', 'min="0"')}${S('Priorität', 'priority', [['normal', 'Normal'], ['hoch', 'Hoch']])}<label class="full">Notizen<textarea name="s${i}_notes" rows="2">${e(st.notes || '')}</textarea></label>`;
+      case 'notify': return `<div class="full">${F('Titel', 'title')}</div><div class="full">${F('Text', 'body')}</div><label class="check full"><input type="checkbox" name="s${i}_email" ${st.email ? 'checked' : ''}> zusätzlich per E-Mail an mich</label>`;
+      case 'wait': return `${F('Dauer', 'amount', 'number', 'min="1"')}${S('Einheit', 'unit', [['minuten', 'Minuten'], ['stunden', 'Stunden'], ['tage', 'Tage']])}`;
+      case 'condition': return `${S('Wenn', 'field', [['kontakt.email', 'Kontakt hat E-Mail'], ['kontakt.telefon', 'Kontakt hat Telefon'], ['kontakt.tag', 'Tag des Kontakts'], ['lead.status', 'Lead-Status'], ['lead.phase', 'Lead-Phase (Name)'], ['lead.vorhanden', 'Lead vorhanden']])}
+        ${S('Prüfung', 'op', [['vorhanden', 'vorhanden'], ['nicht_vorhanden', 'nicht vorhanden'], ['gleich', 'ist gleich'], ['ungleich', 'ist nicht'], ['enthält', 'enthält Tag'], ['enthält_nicht', 'enthält Tag nicht']])}<div class="full">${F('Wert (bei ist gleich / Tag)', 'value')}</div><p class="full small sub">Ist die Bedingung nicht erfüllt, endet der Ablauf hier.</p>`;
+      case 'add_tag': case 'remove_tag': return F('Tag', 'tag');
+      case 'move_stage': return `<div class="full">${S('Neue Phase', 'stage_id', stageOpts.slice(1))}</div>`;
+      case 'set_status': return S('Status', 'status', [['won', 'Gewonnen'], ['lost', 'Verloren'], ['abandoned', 'Aufgegeben'], ['open', 'Offen']]);
+      case 'create_opportunity': return `${F('Name des Leads', 'name', 'text', 'placeholder="{{kontakt.firma}} – Website"')}${S('Phase', 'stage_id', stageOpts.slice(1))}`;
+      case 'add_note': return `<label class="full">Notiz<textarea name="s${i}_text" rows="3">${e(st.text || '')}</textarea></label>`;
+      case 'webhook': return `<div class="full">${F('URL (POST mit allen Daten als JSON)', 'url', 'url')}</div>`;
+      default: return '';
+    }
+  };
+  const body = modal(a.id ? 'Automation bearbeiten' : 'Neue Automation', `<form class="form" id="af">
+    <div class="full">${field('Name *', 'name', a.name, 'text', 'required placeholder="z. B. Bericht geöffnet → anrufen"')}</div>
+    <h3>1. Wenn …</h3><div class="full">${select('Auslöser', 'trigger', trigOpts, a.trigger, 'id="trig"')}</div><div class="full form" id="cfg" style="padding:0">${cfgFields(a.trigger)}</div>
+    <h3>2. … dann</h3><div class="full" id="steps"></div>
+    <div class="full row"><select id="newStep" style="width:auto">${Object.entries(AMETA.steps).map(([k, t]) => `<option value="${k}">${e(t)}</option>`).join('')}</select><button type="button" class="btn" id="addStep">+ Schritt hinzufügen</button></div>
+    <details class="full small"><summary>Platzhalter für Texte</summary><div class="vars">${VARS.map((x) => `<code data-var="{{${x}}}">{{${x}}}</code>`).join(' ')}</div><p class="sub">Klick kopiert den Platzhalter.</p></details>
+    <label class="check full"><input type="checkbox" name="active" ${a.active ? 'checked' : ''}> Automation aktiv</label>
+    <div class="actions">${a.id ? '<button type="button" class="btn danger" id="adel">Löschen</button><span class="grow"></span>' : ''}<button type="button" class="btn" data-close>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`,
+  async (d) => {
+    readSteps();
+    if (!steps.length) throw new Error('Bitte mindestens einen Schritt hinzufügen');
+    const cfg = {}; for (const [k, val] of Object.entries(d)) if (k.startsWith('cfg_') && val !== '') cfg[k.slice(4)] = isNaN(val) || val === '' ? val : Number(val);
+    const payload = { name: d.name, trigger: d.trigger, trigger_config: cfg, steps, active: d.active ? 1 : 0 };
+    await (a.id ? PUT('/api/automations/' + a.id, payload) : POST('/api/automations', payload)); toast('Automation gespeichert ⚡'); render();
+  }, { wide: true });
+  const readSteps = () => {
+    const f = formData($('#af', body));
+    steps.forEach((st, i) => { for (const [k, val] of Object.entries(f)) if (k.startsWith(`s${i}_`)) st[k.slice(`s${i}_`.length)] = val; });
+  };
+  const drawSteps = () => {
+    $('#steps', body).innerHTML = steps.length ? steps.map((st, i) => `<div class="step"><div class="row between"><b>${i + 1}. ${e(AMETA.steps[st.type])}</b><span><button type="button" class="btn sm" data-up="${i}" ${i ? '' : 'disabled'}>↑</button> <button type="button" class="btn sm danger" data-rm="${i}">🗑</button></span></div>
+      <div class="form" style="padding:0;margin-top:8px">${stepFields(st, i)}</div></div>`).join('') : '<p class="sub small">Noch keine Schritte.</p>';
+    $$('[data-rm]', body).forEach((b) => (b.onclick = () => { readSteps(); steps.splice(Number(b.dataset.rm), 1); drawSteps(); }));
+    $$('[data-up]', body).forEach((b) => (b.onclick = () => { readSteps(); const i = Number(b.dataset.up); [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; drawSteps(); }));
+  };
+  drawSteps();
+  $('#trig', body).onchange = (ev) => { a.trigger_config = {}; $('#cfg', body).innerHTML = cfgFields(ev.target.value); };
+  $('#addStep', body).onclick = () => {
+    readSteps(); const type = $('#newStep', body).value;
+    const defaults = { send_email: { to: 'kontakt', subject: '', body: 'Hallo {{kontakt.vorname}},\n\n\n\nViele Grüße\n{{agentur.name}}' }, create_task: { title: '', due_days: 1, priority: 'normal' }, wait: { amount: 1, unit: 'tage' },
+      notify: { title: '' }, condition: { field: 'kontakt.email', op: 'vorhanden' }, move_stage: { stage_id: stageOpts[1]?.[0] }, set_status: { status: 'won' }, create_opportunity: { name: '{{kontakt.firma}}', stage_id: stageOpts[1]?.[0] } };
+    steps.push({ type, ...(defaults[type] || {}) }); drawSteps();
+  };
+  $$('[data-var]', body).forEach((c) => (c.onclick = () => copy(c.dataset.var)));
+  if (a.id) $('#adel', body).onclick = safe(async () => { if (confirm('Automation löschen? Wartende Abläufe werden beendet.')) { await DEL('/api/automations/' + a.id); closeModal(); render(); } });
+}
+
 // ===== Einstellungen =====
 VIEWS.einstellungen = async (v) => {
   SETTINGS = await GET('/api/settings');
-  v.innerHTML = `<div class="grid g2"><form class="card form" id="sf"><h3>Agentur (erscheint in den Berichten)</h3>
+  v.innerHTML = `<div class="grid settings"><form class="card form" id="sf"><h3>Agentur (erscheint in den Berichten)</h3>
     ${field('Agenturname', 'agency_name', SETTINGS.agency_name, 'text', 'placeholder="Webhafen – Webdesign & Entwicklung"')}${field('Website', 'agency_website', SETTINGS.agency_website, 'text', 'placeholder="web-hafen.de"')}
     ${field('E-Mail', 'agency_email', SETTINGS.agency_email, 'email')}${field('Telefon', 'agency_phone', SETTINGS.agency_phone, 'tel')}
     <label>Markenfarbe<input type="color" name="brand_color" value="${e(SETTINGS.brand_color || '#0B4AA0')}" style="height:40px"></label>
@@ -934,8 +1324,25 @@ Content-Type: application/json
 { "key": "${e(SETTINGS.aff_api_key || 'API-SCHLÜSSEL')}", "ref": "CODE-aus-?ref=", "amount": 499.00,
   "customer_name": "Max Muster", "customer_email": "max@example.de" }</div>
     <h3 class="mt">Optionale API-Schlüssel</h3><p class="small">${SETTINGS.places_key ? '✅' : '⬜'} <code>GOOGLE_PLACES_API_KEY</code> – Google-Profil & Bewertungen im Website-Check<br>${SETTINGS.pagespeed_key ? '✅' : '⬜'} <code>PAGESPEED_API_KEY</code> – eigenes Kontingent für PageSpeed-Messungen<br>${SETTINGS.ai_key ? '✅' : '⬜'} <code>ANTHROPIC_API_KEY</code> – Claude schreibt individuelle Anschreiben-Entwürfe</p>
-    <p class="small sub">Werden als Umgebungsvariablen beim Start gesetzt (siehe README).</p></div></div>`;
+    <p class="small sub">Werden als Umgebungsvariablen beim Start gesetzt (siehe README).</p></div>
+    <form class="card form" id="mf"><h3>✉️ E-Mail-Versand (für Termine & Automationen)</h3>
+      <p class="full small sub">Über dein eigenes Postfach. IONOS: Server <code>smtp.ionos.de</code>, Port <code>587</code> (STARTTLS), Benutzer = deine E-Mail-Adresse.</p>
+      ${field('SMTP-Server', 'smtp_host', SETTINGS.smtp_host, 'text', 'placeholder="smtp.ionos.de"')}${field('Port', 'smtp_port', SETTINGS.smtp_port || '587', 'number')}
+      ${select('Verschlüsselung', 'smtp_secure', [['starttls', 'STARTTLS (Port 587)'], ['ssl', 'SSL/TLS (Port 465)']], SETTINGS.smtp_secure || 'starttls')}${field('Benutzer', 'smtp_user', SETTINGS.smtp_user, 'text', 'placeholder="info@web-hafen.de" autocomplete="off"')}
+      ${field('Passwort', 'smtp_pass', '', 'password', `autocomplete="new-password" placeholder="${SETTINGS.smtp_pass_set ? '•••••••• (gespeichert – leer lassen = behalten)' : ''}"`)}${field('Absender', 'mail_from', SETTINGS.mail_from, 'text', 'placeholder="Webhafen <info@web-hafen.de>"')}
+      <div class="full">${field('Benachrichtigungen an (deine Adresse)', 'notify_email', SETTINGS.notify_email, 'email', 'placeholder="info@web-hafen.de"')}</div>
+      <div class="actions"><span class="small ${SETTINGS.mail_ready ? 'good' : 'sub'}">${SETTINGS.mail_ready ? '✅ eingerichtet' : 'noch nicht eingerichtet'}</span><span class="grow"></span><button type="button" class="btn" id="tm">Test-E-Mail</button><button class="btn primary">Speichern</button></div></form>
+    <form class="card form" id="nf"><h3>📱 Benachrichtigungen aufs Handy</h3>
+      <p class="full small sub">Kostenlos mit der App <b>ntfy</b> (iPhone & Android): App installieren → „+“ → Thema abonnieren → den Namen unten eintragen. Wähle einen langen, geheimen Namen – wer ihn kennt, kann mitlesen.</p>
+      <div class="full">${field('ntfy-Adresse', 'ntfy_url', SETTINGS.ntfy_url, 'url', 'placeholder="https://ntfy.sh/webhafen-…"')}</div>
+      <div class="actions"><button type="button" class="btn" id="gn">Geheimen Namen vorschlagen</button><span class="grow"></span><button type="button" class="btn" id="tn">Test senden</button><button class="btn primary">Speichern</button></div></form>
+    </div>`;
   $('#sf').onsubmit = safe(async (ev) => { ev.preventDefault(); const sd = formData(ev.target); sd.report_logo = $('#rlogo').checked ? '1' : '0'; SETTINGS = { ...SETTINGS, ...(await PUT('/api/settings', sd)) }; document.documentElement.style.setProperty('--accent', SETTINGS.brand_color); toast('Gespeichert'); });
+  $('#mf').onsubmit = safe(async (ev) => { ev.preventDefault(); SETTINGS = { ...SETTINGS, ...(await PUT('/api/settings', formData(ev.target))) }; toast('E-Mail-Einstellungen gespeichert'); render(); });
+  $('#tm').onclick = safe(async () => { $('#tm').disabled = true; try { const r = await POST('/api/settings/test-mail', {}); toast(`Test-E-Mail an ${r.to} gesendet`); } finally { $('#tm').disabled = false; } });
+  $('#nf').onsubmit = safe(async (ev) => { ev.preventDefault(); SETTINGS = { ...SETTINGS, ...(await PUT('/api/settings', formData(ev.target))) }; toast('Gespeichert'); });
+  $('#gn').onclick = () => { $('[name=ntfy_url]').value = 'https://ntfy.sh/webhafen-' + [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 16); };
+  $('#tn').onclick = safe(async () => { await PUT('/api/settings', { ntfy_url: $('[name=ntfy_url]').value }); await POST('/api/settings/test-ntfy'); toast('Test gesendet – schau aufs Handy'); });
   $('#gen').onclick = safe(async () => { if (SETTINGS.aff_api_key && !confirm('Alter Schlüssel wird ungültig. Fortfahren?')) return;
     const k = [...crypto.getRandomValues(new Uint8Array(18))].map((b) => b.toString(16).padStart(2, '0')).join(''); await PUT('/api/settings', { aff_api_key: k }); render(); });
 };

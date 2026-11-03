@@ -2,18 +2,20 @@
 
 *Das Betriebssystem für dein Business.*
 
-Eigene Marketing- und Vertriebs-Software für Webhafen: CRM, Lead-Pipelines mit Prognose,
-Social Planner, Affiliate-Manager, Trigger-Links und automatische Website-Checks für die
-Kundenakquise – in **einer** App, ohne monatliche Lizenzkosten.
+Eigene Marketing- und Vertriebs-Software für Webhafen: CRM mit Kontaktverlauf, Aufgaben,
+Terminbuchung, Automationen, Lead-Pipelines mit Prognose, Social Planner, Affiliate-Manager,
+Trigger-Links und automatische Website-Checks für die Kundenakquise – in **einer** App,
+ohne monatliche Lizenzkosten.
 
-- **Keine Abhängigkeiten**: nur Node.js ≥ 22.13 (die Datenbank SQLite ist eingebaut)
-- **Kein Build-Schritt**: `npm start` und fertig
+- **Schlank**: Node.js ≥ 22.13 (die Datenbank SQLite ist eingebaut), einzige Abhängigkeit: `nodemailer` für den E-Mail-Versand
+- **Kein Build-Schritt**: `npm install && npm start` und fertig
 - Alle Daten liegen in einer Datei: `data/webhafen-os.db` (zum Sichern einfach kopieren)
 
 ## Starten
 
 ```bash
 cd webhafen-os
+npm install
 ADMIN_PASSWORD='ein-langes-passwort' npm start
 # → http://localhost:3000
 ```
@@ -34,8 +36,28 @@ Ohne `ADMIN_PASSWORD` ist die App **ohne Login** erreichbar – nur lokal so bet
 
 Tests: `npm test`
 
-Optional für KI-Anschreiben: `npm install` (installiert `@anthropic-ai/sdk`). Ohne das Paket läuft alles,
-die Entwürfe kommen dann aus einer Textvorlage.
+`npm install` installiert auch das optionale `@anthropic-ai/sdk` für KI-Anschreiben. Ohne das Paket läuft
+alles, die Entwürfe kommen dann aus einer Textvorlage.
+
+### E-Mail-Versand einrichten (für Terminbestätigungen, Erinnerungen und Automationen)
+
+In der App unter **Einstellungen → E-Mail-Versand**. Für IONOS-Postfächer:
+
+| Feld | Wert |
+|---|---|
+| SMTP-Server | `smtp.ionos.de` |
+| Port / Verschlüsselung | `587` / STARTTLS (oder `465` / SSL) |
+| Benutzer | deine vollständige E-Mail-Adresse, z. B. `info@web-hafen.de` |
+| Passwort | das Passwort des Postfachs |
+| Absender | z. B. `Webhafen <info@web-hafen.de>` |
+
+Mit „Test-E-Mail“ prüfst du die Verbindung. Das Passwort wird nie an den Browser zurückgegeben.
+
+### Benachrichtigungen aufs Handy
+
+Kostenlos über die App **ntfy** (iPhone & Android): In den Einstellungen „Geheimen Namen vorschlagen“,
+in der ntfy-App „+“ → genau diesen Namen abonnieren, „Test senden“. Neue Termine, Absagen und
+Automations-Benachrichtigungen („Bericht geöffnet!“) kommen dann als Push-Nachricht.
 
 ### Google-Schlüssel einrichten (für Lead-Finder, Google-Profil, Ranking, Heatmap)
 
@@ -50,8 +72,63 @@ eine Heatmap 9 / 25 / 49 Abfragen (3×3 / 5×5 / 7×7).
 
 ## Was die App kann
 
-### 👥 Kontakte
-Kontakte anlegen, durchsuchen, taggen, per CSV importieren.
+### ☀️ Heute (Startseite)
+Alles für den Tag auf einen Blick: überfällige und heutige Aufgaben (mit Schnell-Eingabe und Abhaken),
+Termine der nächsten 7 Tage, **heiße Leads** (Interessenten, die ihren Website-Check-Bericht gerade
+geöffnet oder das Widget genutzt haben), Kennzahlen der Pipeline und Social-Posts mit Handlungsbedarf.
+Oben rechts die **Glocke** mit allen Benachrichtigungen.
+
+### 👥 Kontakte mit Verlauf
+Kontakte anlegen, durchsuchen, taggen, per CSV importieren. Jeder Kontakt hat eine **Detailseite** mit
+Leads, Terminen, Aufgaben, Akquise-Bericht und einem **Verlauf**: Notizen, Anrufe, Treffen, gesendete
+E-Mails, Terminbuchungen, Phasen- und Statuswechsel, geöffnete Berichte – vieles davon automatisch.
+Direkt von dort: Notiz mit Wiedervorlage, Anruf protokollieren, E-Mail schreiben (über dein Postfach),
+Aufgabe oder Termin anlegen.
+
+### ✅ Aufgaben
+Aufgaben mit Fälligkeit (mit oder ohne Uhrzeit), Priorität und Verknüpfung zu Kontakt/Lead.
+Ansichten: offen, heute, überfällig, diese Woche, erledigt. Automationen legen ebenfalls Aufgaben an (⚡).
+
+### 📅 Kalender & Terminbuchung
+- **Buchungsseiten** wie `https://os.web-hafen.de/termin/kostenloses-erstgespraech`: Interessenten wählen
+  Tag und Uhrzeit selbst. Einstellbar: Dauer, Puffer, Raster, Vorlaufzeit, wie weit im Voraus,
+  Verfügbarkeit je Wochentag (mehrere Zeitfenster, z. B. mit Mittagspause), Ort/Link, Farbe.
+- Gebuchte Termine und **Blocker** werden kalenderübergreifend ausgespart – kein Doppelbuchen.
+- Bei der Buchung: Kontakt wird gefunden oder angelegt, auf Wunsch ein Lead, Eintrag im Verlauf,
+  **Bestätigung per E-Mail mit Kalendereintrag (.ics)** und Absage-Link, Benachrichtigung an dich.
+- **Erinnerung** an den Kunden X Stunden vorher (Standard 24 h).
+- **Absage** durch den Kunden über den Link in der E-Mail, inkl. Link zum Neu-Buchen.
+- Der Button im **Website-Check-Bericht** führt direkt zur Buchungsseite – der Termin wird dann
+  automatisch dem richtigen Interessenten zugeordnet.
+- **Kalender-Abo**: geheimer Link zum Abonnieren in Google Kalender, Apple Kalender oder Outlook.
+
+### ⚡ Automationen
+„Wenn das passiert … dann mach das“ – mit Wartezeiten und Bedingungen.
+
+**Auslöser:** neuer Kontakt · Tag hinzugefügt · neuer Lead · Lead in Phase verschoben ·
+Lead gewonnen/verloren · Termin gebucht · Termin abgesagt · Interessent öffnet seinen Bericht ·
+Website-Check über das Widget · neuer Interessent aus der Akquise.
+
+**Schritte:** E-Mail senden (an Kontakt, an dich oder eine Adresse) · Aufgabe anlegen (fällig in X Tagen/Stunden
+oder X Stunden vor dem Termin) · Benachrichtigung (App, Handy, E-Mail) · Warten (Minuten/Stunden/Tage) ·
+Bedingung (z. B. „hat E-Mail“, „Tag enthält …“, „Phase ist …“) · Tag setzen/entfernen ·
+Lead verschieben · Status setzen · Lead anlegen · Notiz · Webhook.
+
+**Platzhalter** in Texten: `{{kontakt.vorname}}`, `{{kontakt.firma}}`, `{{lead.name}}`, `{{termin.datum}}`,
+`{{termin.uhrzeit}}`, `{{termin.absage_link}}`, `{{bericht.link}}`, `{{bericht.wertung}}`, `{{buchungslink}}`,
+`{{agentur.name}}` u. v. m.
+
+**Vorlagen (ein Klick):**
+- Bericht geöffnet → Handy-Benachrichtigung + Anruf-Aufgabe
+- Termin gebucht → Lead auf „Qualifiziert“ + Vorbereitungs-Aufgabe 2 h vorher
+- Widget-Anfrage → Danke-Mail mit Bericht & Buchungslink, nach 3 Tagen Nachfassen (falls noch kein Termin)
+- Termin gebucht → Tag „termin“
+- Angebot gesendet → nach 5 Tagen nachfassen, wenn der Lead noch dort steht
+- Lead gewonnen → Danke-Mail, nach 14 Tagen Bitte um Google-Bewertung
+
+Jede Automation hat ein **Protokoll** (welcher Schritt wann, Fehler, Wartezeit bis …) und lässt sich
+mit einem Kontakt **testen**. Schutz gegen Endlosschleifen ist eingebaut. CSV-Importe lösen bewusst
+keine Automationen aus.
 
 ### 🎯 Leads (Pipelines)
 - Kanban-Board mit Drag & Drop zwischen den Phasen
@@ -183,4 +260,6 @@ Domain und E-Mail lassen sich überschreiben: `DOMAIN=… EMAIL=… bash deploy/
   freigeschaltete Entwickler-App bzw. einen Google-Ads-Developer-Token – nicht enthalten.
 - Direkte Social-Anbindung ohne Webhook für Meta, LinkedIn, TikTok, YouTube (gleicher Grund).
 - Mehrere Benutzer / Kunden-Konten (aktuell ein gemeinsamer Login).
-- E-Mail-Versand, Countdown-Timer, Marken-Boards.
+- Belegte Zeiten aus Google/IONOS-Kalender beim Buchen berücksichtigen (geplant; bis dahin Blocker eintragen).
+- Gemeinsamer Posteingang (E-Mails empfangen), Newsletter, Angebote & Rechnungen (geplant: Phase 2).
+- Countdown-Timer, Marken-Boards.

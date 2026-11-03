@@ -13,5 +13,8 @@
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^1.4.0"
+  },
+  "dependencies": {
+    "nodemailer": "10.1.7"
   }
 }
