@@ -30,6 +30,10 @@ npm run demo
 Im gleichen WLAN klappt die Buchungsseite auch vom Handy – die Adresse zeigt `npm run demo` beim Start an.
 Daten zurücksetzen: `npm run demo -- --neu`. Die Demo-Datenbank (`data/demo.db`) ist getrennt von den echten Daten.
 
+### Browser-Version (Vorschau-Link, z. B. fürs Handy)
+
+`npm run build:browser` baut nach `dist/browser/` eine Version, in der Server-Code und Datenbank komplett im Browser laufen (SQLite über sql.js). Sie startet mit den Demo-Daten und speichert Änderungen nur im jeweiligen Browser. Google-Daten und PageSpeed gibt es dort nicht, Websites für den Check werden nachgebildet, E-Mails landen im Demo-Postausgang. Für echte Arbeit ist das nichts, zum Zeigen und Durchklicken schon.
+
 ## Starten
 
 ```bash

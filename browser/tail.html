@@ -1,0 +1,11 @@
+<script>
+// Falls der Start hängt, sagt die Lade-Anzeige warum (statt endlos zu drehen)
+window.addEventListener('error', function (ev) { var s = document.querySelector('#wosLoading span'); if (s) s.textContent = 'Start fehlgeschlagen: ' + (ev.message || (ev.target && ev.target.src) || 'Skript nicht geladen'); }, true);
+setTimeout(function () { var s = document.querySelector('#wosLoading span'); if (s && /startet|geladen|gestartet/.test(s.textContent)) s.textContent = 'Der Start dauert ungewöhnlich lange. Bitte Seite neu laden.'; }, 20000);
+</script>
+<script type="importmap">{"imports":{
+"node:sqlite":"./shims/node-sqlite.js","node:crypto":"./shims/node-crypto.js","node:fs":"./shims/node-fs.js",
+"node:fs/promises":"./shims/node-fs-promises.js","node:path":"./shims/node-path.js","node:url":"./shims/node-url.js",
+"node:http":"./shims/node-http.js","node:os":"./shims/node-os.js","nodemailer":"./shims/nodemailer.js"}}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.14.2/sql-asm-memory-growth.js"></script>
+<script type="module" src="boot.js"></script>

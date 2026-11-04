@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
-    "demo": "node --disable-warning=ExperimentalWarning scripts/demo.js"
+    "demo": "node --disable-warning=ExperimentalWarning scripts/demo.js",
+    "build:browser": "node scripts/build-browser.js"
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^1.4.0"

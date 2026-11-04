@@ -28,6 +28,22 @@ function toast(msg, err = false) {
   const t = $('#toast'); t.textContent = msg; t.className = 'toast' + (err ? ' err' : ''); t.hidden = false;
   clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), err ? 6000 : 2800);
 }
+// Eigene Rückfragen statt Browser-Dialoge (sehen auf dem Handy besser aus und funktionieren überall)
+function ask(msg, { ok = 'Ja', no = 'Abbrechen', input = null, danger = /lösch|trennen|ungültig|nicht mehr/i.test(msg) } = {}) {
+  return new Promise((resolve) => {
+    const d = document.createElement('div'); d.className = 'modal dlg';
+    d.innerHTML = `<form class="modal-box dlg-box"><p>${e(msg)}</p>${input != null ? `<input id="dlgIn" value="${e(input)}">` : ''}
+      <div class="row mt"><span class="grow"></span><button type="button" class="btn" data-no>${e(no)}</button><button class="btn ${danger ? 'danger' : 'primary'}">${e(ok)}</button></div></form>`;
+    document.body.appendChild(d);
+    const f = $('form', d), inp = $('input', d), cancel = input != null ? null : false;
+    const done = (v) => { d.remove(); resolve(v); };
+    f.onsubmit = (ev) => { ev.preventDefault(); done(input != null ? inp.value.trim() : true); };
+    $('[data-no]', d).onclick = () => done(cancel);
+    d.onclick = (ev) => { if (ev.target === d) done(cancel); };
+    if (inp) { inp.focus(); inp.select(); } else $('button:last-child', f).focus();
+  });
+}
+const askText = (msg, value = '') => ask(msg, { ok: 'OK', input: value, danger: false });
 const safe = (fn) => async (...a) => { try { await fn(...a); } catch (er) { toast(er.message, true); } };
 const formData = (form) => {
   const o = {};
@@ -49,7 +65,7 @@ function modal(title, html, onSubmit, { wide } = {}) {
 const closeModal = () => { $('#modal').hidden = true; $('#modalBody').innerHTML = ''; };
 $('#modal').addEventListener('click', (ev) => { if (ev.target.id === 'modal' || ev.target.closest('[data-close]')) closeModal(); });
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeModal(); });
-const copy = (txt) => navigator.clipboard.writeText(txt).then(() => toast('In die Zwischenablage kopiert'), () => prompt('Kopieren:', txt));
+const copy = (txt) => navigator.clipboard.writeText(txt).then(() => toast('In die Zwischenablage kopiert'), () => askText('Zum Kopieren markieren:', txt));
 const baseUrl = () => (SETTINGS.public_url || location.origin).replace(/\/$/, '');
 const field = (label, name, val = '', type = 'text', extra = '') => `<label${type === 'textarea' ? ' class="full"' : ''}>${label}${type === 'textarea' ? `<textarea name="${name}" ${extra}>${e(val)}</textarea>` : `<input type="${type}" name="${name}" value="${e(val)}" ${extra}>`}</label>`;
 const select = (label, name, opts, val, extra = '') => `<label>${label}<select name="${name}" ${extra}>${opts.map(([v, t]) => `<option value="${e(v)}" ${String(v) === String(val ?? '') ? 'selected' : ''}>${e(t)}</option>`).join('')}</select></label>`;
@@ -97,7 +113,7 @@ $('#logout').onclick = async () => { await POST('/api/logout'); location.reload(
 // Demo-Modus: Hinweis oben und Postausgang mit allen E-Mails, die verschickt würden
 function showDemoBar() {
   const bar = document.createElement('div'); bar.className = 'demo-bar';
-  bar.innerHTML = `🧪 <b>Demo</b> – alle Daten sind erfunden, E-Mails werden nicht verschickt. <a href="#" id="outbox">📬 Demo-Postausgang</a>
+  bar.innerHTML = `<span>🧪 <b>Demo</b> – alle Daten sind erfunden, E-Mails werden nicht verschickt.</span> <a href="#" id="outbox">📬 Demo-Postausgang</a>
     <a href="/termin/kostenloses-erstgespraech" target="_blank">📅 Buchungsseite ↗</a><a href="/bericht/demo-musterweg" target="_blank">📄 Beispielbericht ↗</a><a href="/widget" target="_blank">🧩 Widget ↗</a>`;
   $('main').prepend(bar);
   $('#outbox').onclick = safe(async (ev) => {
@@ -136,7 +152,7 @@ function contactModal(c) {
     ${field('E-Mail', 'email', c.email, 'email')}${field('Telefon', 'phone', c.phone, 'tel')}${field('Tags (mit Komma getrennt)', 'tags', c.tags)}<span></span>${field('Notizen', 'notes', c.notes, 'textarea')}
     <div class="actions">${c.id ? '<button type="button" class="btn danger" id="del">Löschen</button><span class="grow"></span>' : ''}<button type="button" class="btn" data-close>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`,
   async (d) => { await (c.id ? PUT('/api/contacts/' + c.id, d) : POST('/api/contacts', d)); CONTACTS_CACHE = null; toast('Gespeichert'); render(); });
-  if (c.id) $('#del').onclick = safe(async () => { if (confirm('Kontakt löschen?')) { await DEL('/api/contacts/' + c.id); closeModal(); render(); } });
+  if (c.id) $('#del').onclick = safe(async () => { if (await ask('Kontakt löschen?')) { await DEL('/api/contacts/' + c.id); closeModal(); render(); } });
 }
 
 // ===== Leads =====
@@ -209,8 +225,8 @@ function leadsList(board, opps) {
   $('#bGo').onclick = safe(async () => {
     const [action, value] = $('#bAct').value.split(':'); if (!action) return;
     const ids = $$('.sel:checked').map((c) => c.value);
-    let val = value; if (action === 'tag') { val = prompt('Tag:'); if (!val) return; }
-    if (action === 'delete' && !confirm(`${ids.length} Leads löschen?`)) return;
+    let val = value; if (action === 'tag') { val = await askText('Welchen Tag hinzufügen?'); if (!val) return; }
+    if (action === 'delete' && !await ask(`${ids.length} Leads löschen?`)) return;
     await POST('/api/opportunities/bulk', { ids, action, value: val }); toast('Erledigt'); render();
   });
 }
@@ -247,7 +263,7 @@ async function oppModal(o) {
   });
   const cs = $('[name=contact_id]', body); const toggle = () => ($('#newC').hidden = !!cs.value); cs.onchange = toggle; toggle();
   $('#pSel').onchange = (ev) => { const p = PIPES.find((x) => x.id == ev.target.value); $('#sSel').innerHTML = stageOpts(p).map(([v, t]) => `<option value="${v}">${e(t)}</option>`).join(''); };
-  if (o.id) $('#del').onclick = safe(async () => { if (confirm('Lead löschen?')) { await DEL('/api/opportunities/' + o.id); closeModal(); render(); } });
+  if (o.id) $('#del').onclick = safe(async () => { if (await ask('Lead löschen?')) { await DEL('/api/opportunities/' + o.id); closeModal(); render(); } });
   if ($('#oTask')) $('#oTask').onclick = (ev) => { ev.preventDefault(); taskModal({}, { contact_id: o.contact_id, opportunity_id: o.id, title: `Nachfassen: ${o.name}` }); };
 }
 
@@ -322,7 +338,7 @@ function pipelineModal(p) {
   };
   draw();
   $('#addS').onclick = () => { readStages(); stages.push({ name: '', probability: 50 }); draw(); };
-  if (p.id) $('#del').onclick = safe(async () => { if (confirm('Pipeline samt allen Leads löschen?')) { await DEL('/api/pipelines/' + p.id); closeModal(); render(); } });
+  if (p.id) $('#del').onclick = safe(async () => { if (await ask('Pipeline samt allen Leads löschen?')) { await DEL('/api/pipelines/' + p.id); closeModal(); render(); } });
 }
 
 // ===== Social Planner =====
@@ -388,7 +404,7 @@ function postModal(p) {
   $$('[name=mode]', body).forEach((r) => (r.onchange = sw)); sw();
   const cc = () => { const n = $('#ctext').value.length; $('#cc').textContent = `${n} Zeichen${n > 300 ? ' · Bluesky/Threads: max. 300/500' : ''}${n > 2200 ? ' · Instagram: max. 2.200' : ''}`; };
   $('#ctext').oninput = cc; cc();
-  if (p.id) $('#del').onclick = safe(async () => { if (confirm('Beitrag löschen?')) { await DEL('/api/social/posts/' + p.id); closeModal(); render(); } });
+  if (p.id) $('#del').onclick = safe(async () => { if (await ask('Beitrag löschen?')) { await DEL('/api/social/posts/' + p.id); closeModal(); render(); } });
 }
 function socialAccounts(v) {
   const big = ['facebook', 'instagram', 'linkedin', 'tiktok', 'youtube']; const more = ['pinterest', 'threads', 'bluesky', 'gbp', 'x', 'community'];
@@ -415,7 +431,7 @@ function accountModal(a) {
     <div class="actions">${a.id ? '<button type="button" class="btn" id="test">Testbeitrag senden</button><button type="button" class="btn danger" id="del">Trennen</button><span class="grow"></span>' : ''}<button type="button" class="btn" data-close>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`,
   async (d) => { await (a.id ? PUT('/api/social/accounts/' + a.id, d) : POST('/api/social/accounts', d)); toast('Konto gespeichert'); render(); });
   if (a.id) {
-    $('#del').onclick = safe(async () => { if (confirm('Konto trennen?')) { await DEL('/api/social/accounts/' + a.id); closeModal(); render(); } });
+    $('#del').onclick = safe(async () => { if (await ask('Konto trennen?')) { await DEL('/api/social/accounts/' + a.id); closeModal(); render(); } });
     $('#test').onclick = safe(async () => {
       const p = await POST('/api/social/posts', { content: 'Testbeitrag aus Webhafen OS ✅', account_ids: [a.id], status: 'draft' });
       const r = await POST(`/api/social/posts/${p.id}/publish`); toast(r.errors.length ? r.errors.join(', ') : 'Test erfolgreich: ' + r.status, !!r.errors.length);
@@ -459,7 +475,7 @@ async function socialEvergreen(v) {
   async (d) => { d.active = d.active ? 1 : 0; d.days ||= []; d.account_ids ||= []; await (c.id ? PUT('/api/social/categories/' + c.id, d) : POST('/api/social/categories', d)); render(); });
   $('#add').onclick = () => catModal({});
   $$('[data-cat]').forEach((b) => (b.onclick = () => { catModal(CATS.find((c) => c.id == b.dataset.cat)); const c = CATS.find((x) => x.id == b.dataset.cat);
-    $('#del').onclick = safe(async () => { if (confirm('Kategorie löschen?')) { await DEL('/api/social/categories/' + c.id); closeModal(); render(); } }); }));
+    $('#del').onclick = safe(async () => { if (await ask('Kategorie löschen?')) { await DEL('/api/social/categories/' + c.id); closeModal(); render(); } }); }));
 }
 async function socialRss(v) {
   const feeds = await GET('/api/social/feeds');
@@ -544,7 +560,7 @@ function affCampaigns(v, camps) {
     <td class="num">${c.affiliate_count}</td><td class="num">${eur(c.revenue)}</td><td class="num"><button class="btn sm" data-ed="${c.id}">Bearbeiten</button> <button class="btn sm danger" data-del="${c.id}">🗑</button></td></tr>`).join('')}</table></div>` : empty('🤝', 'Noch keine Kampagnen', 'Lege eine Kampagne an, um Partner für Empfehlungen zu belohnen.')}`;
   $('#add').onclick = () => campaignModal({});
   $$('[data-ed]').forEach((b) => (b.onclick = () => campaignModal(camps.find((c) => c.id == b.dataset.ed))));
-  $$('[data-del]').forEach((b) => (b.onclick = safe(async () => { if (confirm('Kampagne mit allen Affiliates löschen?')) { await DEL('/api/aff/campaigns/' + b.dataset.del); render(); } })));
+  $$('[data-del]').forEach((b) => (b.onclick = safe(async () => { if (await ask('Kampagne mit allen Affiliates löschen?')) { await DEL('/api/aff/campaigns/' + b.dataset.del); render(); } })));
 }
 async function affPartners(v, camps) {
   const list = await GET('/api/aff/affiliates');
@@ -558,7 +574,7 @@ async function affPartners(v, camps) {
     <label class="check"><input type="checkbox" name="active" ${a.active !== 0 ? 'checked' : ''}> aktiv</label>
     <div class="actions">${a.id ? '<button type="button" class="btn danger" id="del">Löschen</button><span class="grow"></span>' : ''}<button class="btn primary">Speichern</button></div></form>`,
   async (d) => { d.active = d.active ? 1 : 0; if (!d.code) delete d.code; await (a.id ? PUT('/api/aff/affiliates/' + a.id, { ...d, id: a.id }) : POST('/api/aff/affiliates', d)); render(); });
-    if (a.id) $('#del').onclick = safe(async () => { if (confirm('Löschen?')) { await DEL('/api/aff/affiliates/' + a.id); closeModal(); render(); } }); };
+    if (a.id) $('#del').onclick = safe(async () => { if (await ask('Löschen?')) { await DEL('/api/aff/affiliates/' + a.id); closeModal(); render(); } }); };
   $('#add').onclick = () => am({});
   $$('[data-ed]').forEach((b) => (b.onclick = () => am(list.find((a) => a.id == b.dataset.ed))));
   $$('[data-copy]').forEach((b) => (b.onclick = () => copy(b.dataset.copy)));
@@ -665,7 +681,7 @@ VIEWS.audits = async (v, sub) => {
   $$('[data-chk]').forEach((b) => (b.onclick = safe(async () => { b.disabled = true; b.textContent = '⏳'; const a = await POST(`/api/prospects/${b.dataset.chk}/audit`); location.hash = '#/audits/' + a.id; })));
   $$('[data-crm]').forEach((b) => (b.onclick = safe(async () => { await POST(`/api/prospects/${b.dataset.crm}/crm`); toast('Kontakt und Lead angelegt'); render(); })));
   $$('[data-mail]').forEach((b) => (b.onclick = () => outreachModal(list.find((p) => p.id == b.dataset.mail))));
-  $$('[data-pdel]').forEach((b) => (b.onclick = safe(async () => { if (confirm('Interessent löschen? (Website-Check bleibt erhalten)')) { await DEL('/api/prospects/' + b.dataset.pdel); render(); } })));
+  $$('[data-pdel]').forEach((b) => (b.onclick = safe(async () => { if (await ask('Interessent löschen? (Website-Check bleibt erhalten)')) { await DEL('/api/prospects/' + b.dataset.pdel); render(); } })));
 };
 
 function manualAuditModal() {
@@ -834,7 +850,7 @@ async function agentsView(v) {
     <div class="actions">${g.id ? '<button type="button" class="btn danger" id="del">Löschen</button><span class="grow"></span>' : ''}<button class="btn primary">Speichern</button></div></form>`,
   async (d) => { for (const k of ['only_no_website', 'auto_audit', 'auto_crm', 'auto_outreach', 'active']) d[k] = d[k] ? 1 : 0;
     await (g.id ? PUT('/api/agents/' + g.id, d) : POST('/api/agents', d)); toast('Agent gespeichert'); render(); });
-    if (g.id) $('#del').onclick = safe(async () => { if (confirm('Agent löschen?')) { await DEL('/api/agents/' + g.id); closeModal(); render(); } }); };
+    if (g.id) $('#del').onclick = safe(async () => { if (await ask('Agent löschen?')) { await DEL('/api/agents/' + g.id); closeModal(); render(); } }); };
   $('#add').onclick = () => am({});
   $$('[data-ed]').forEach((b) => (b.onclick = () => am(list.find((g) => g.id == b.dataset.ed))));
   $$('[data-run]').forEach((b) => (b.onclick = safe(async () => { b.disabled = true; b.textContent = '⏳ läuft …'; const r = await POST(`/api/agents/${b.dataset.run}/run`);
@@ -902,7 +918,7 @@ async function auditDetail(v, id) {
       : '<p class="small sub">Verfügbar, sobald das Google-Unternehmensprofil gefunden wurde (<code>GOOGLE_PLACES_API_KEY</code>).</p>'}</div></div>
     <iframe class="report-frame" id="rf" src="/bericht/${e(a.token)}?vorschau=1" title="Bericht"></iframe></div>`;
   $('#share').onclick = () => copy(link);
-  $('#del').onclick = safe(async () => { if (confirm('Check löschen?')) { await DEL('/api/audits/' + id); location.hash = '#/audits'; } });
+  $('#del').onclick = safe(async () => { if (await ask('Check löschen?')) { await DEL('/api/audits/' + id); location.hash = '#/audits'; } });
   $('#lead').onclick = safe(async () => { const x = await POST(`/api/audits/${id}/to-lead`); toast(x.existed ? 'War bereits im CRM' : 'Kontakt & Lead angelegt'); });
   if (a.prospect) $('#mail').onclick = () => outreachModal(a.prospect);
   $('#re').onclick = safe(async () => { $('#re').disabled = true; $('#re').textContent = '⏳ Prüfe …';
@@ -1078,7 +1094,7 @@ async function contactDetail(v, id) {
       <p class="full small sub">Wird über dein Postfach gesendet und im Verlauf gespeichert.</p><div class="actions"><button class="btn primary">Senden</button></div></form>`,
     async (f) => { await POST(`/api/contacts/${c.id}/email`, f); toast('E-Mail gesendet'); again(); });
   };
-  $$('[data-adel]').forEach((b) => (b.onclick = safe(async () => { if (confirm('Eintrag löschen?')) { await DEL('/api/activities/' + b.dataset.adel); again(); } })));
+  $$('[data-adel]').forEach((b) => (b.onclick = safe(async () => { if (await ask('Eintrag löschen?')) { await DEL('/api/activities/' + b.dataset.adel); again(); } })));
   $$('.clamp', v).forEach((el) => (el.onclick = () => el.classList.toggle('open')));
 }
 
@@ -1114,11 +1130,11 @@ function apptActions(a) {
       <span class="grow"></span>${a.contact_id ? `<a class="btn" href="#/kontakte/${a.contact_id}">Kontakt</a>` : ''}<button class="btn" id="aEdit">Bearbeiten</button><button class="btn danger" id="aDel">🗑</button></div>`);
   $$('[data-st]', body).forEach((b) => (b.onclick = safe(async () => {
     const st = b.dataset.st; let notifyCustomer = false;
-    if (st === 'abgesagt' && a.email && SETTINGS.mail_ready) notifyCustomer = confirm('Absage per E-Mail an den Kunden schicken?');
+    if (st === 'abgesagt' && a.email && SETTINGS.mail_ready) notifyCustomer = await ask('Absage per E-Mail an den Kunden schicken?', { ok: 'Mit E-Mail', no: 'Ohne E-Mail' });
     await PUT('/api/appointments/' + a.id, { status: st, notify_customer: notifyCustomer }); closeModal(); toast('Gespeichert'); render();
   })));
   $('#aEdit').onclick = () => apptModal(a);
-  $('#aDel').onclick = safe(async () => { if (confirm('Termin endgültig löschen?')) { await DEL('/api/appointments/' + a.id); closeModal(); render(); } });
+  $('#aDel').onclick = safe(async () => { if (await ask('Termin endgültig löschen?')) { await DEL('/api/appointments/' + a.id); closeModal(); render(); } });
 }
 async function apptModal(a = {}, preset = {}, after = render) {
   const [contacts, cals] = await Promise.all([contactsList(), GET('/api/calendars')]);
@@ -1184,7 +1200,7 @@ function calModal(c) {
     d.create_lead = d.create_lead ? 1 : 0; d.active = d.active ? 1 : 0; d.availability = availability; if (!d.slug) delete d.slug;
     await (c.id ? PUT('/api/calendars/' + c.id, { ...d, id: c.id }) : POST('/api/calendars', d)); toast('Buchungsseite gespeichert'); render();
   });
-  if (c.id) $('#cdel').onclick = safe(async () => { if (confirm('Buchungsseite löschen? Bestehende Termine bleiben erhalten.')) { await DEL('/api/calendars/' + c.id); closeModal(); render(); } });
+  if (c.id) $('#cdel').onclick = safe(async () => { if (await ask('Buchungsseite löschen? Bestehende Termine bleiben erhalten.')) { await DEL('/api/calendars/' + c.id); closeModal(); render(); } });
 }
 async function icsView(v) {
   const url = SETTINGS.ics_key ? `${baseUrl()}/kalender.ics?key=${SETTINGS.ics_key}` : '';
@@ -1197,7 +1213,7 @@ async function icsView(v) {
     <p class="small sub">Google aktualisiert abonnierte Kalender nur alle paar Stunden. Neue Buchungen meldet dir Webhafen OS deshalb zusätzlich per Benachrichtigung.</p></div></div>`;
   if ($('#cp')) $('#cp').onclick = () => copy(url);
   $('#gen').onclick = safe(async () => {
-    if (url && !confirm('Der alte Link funktioniert danach nicht mehr. Fortfahren?')) return;
+    if (url && !await ask('Der alte Link funktioniert danach nicht mehr. Fortfahren?')) return;
     const k = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
     SETTINGS = { ...SETTINGS, ...(await PUT('/api/settings', { ics_key: k })) }; render();
   });
@@ -1319,7 +1335,7 @@ async function automationModal(a) {
     steps.push({ type, ...(defaults[type] || {}) }); drawSteps();
   };
   $$('[data-var]', body).forEach((c) => (c.onclick = () => copy(c.dataset.var)));
-  if (a.id) $('#adel', body).onclick = safe(async () => { if (confirm('Automation löschen? Wartende Abläufe werden beendet.')) { await DEL('/api/automations/' + a.id); closeModal(); render(); } });
+  if (a.id) $('#adel', body).onclick = safe(async () => { if (await ask('Automation löschen? Wartende Abläufe werden beendet.')) { await DEL('/api/automations/' + a.id); closeModal(); render(); } });
 }
 
 // ===== Einstellungen =====
@@ -1360,6 +1376,6 @@ Content-Type: application/json
   $('#nf').onsubmit = safe(async (ev) => { ev.preventDefault(); SETTINGS = { ...SETTINGS, ...(await PUT('/api/settings', formData(ev.target))) }; toast('Gespeichert'); });
   $('#gn').onclick = () => { $('[name=ntfy_url]').value = 'https://ntfy.sh/webhafen-' + [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 16); };
   $('#tn').onclick = safe(async () => { await PUT('/api/settings', { ntfy_url: $('[name=ntfy_url]').value }); await POST('/api/settings/test-ntfy'); toast('Test gesendet – schau aufs Handy'); });
-  $('#gen').onclick = safe(async () => { if (SETTINGS.aff_api_key && !confirm('Alter Schlüssel wird ungültig. Fortfahren?')) return;
+  $('#gen').onclick = safe(async () => { if (SETTINGS.aff_api_key && !await ask('Alter Schlüssel wird ungültig. Fortfahren?')) return;
     const k = [...crypto.getRandomValues(new Uint8Array(18))].map((b) => b.toString(16).padStart(2, '0')).join(''); await PUT('/api/settings', { aff_api_key: k }); render(); });
 };

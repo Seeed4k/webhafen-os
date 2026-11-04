@@ -1,0 +1,20 @@
+<title>Webhafen OS</title>
+<meta name="theme-color" content="#071220">
+<link rel="icon" href="brand/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+<style>
+/* Browser-Version: Lade-Anzeige und Ebene für öffentliche Seiten (Buchung, Bericht, Widget) */
+#wosLoading{position:fixed;inset:0;z-index:100;display:grid;place-items:center;background:#071220;color:#dbe6f7;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;padding:24px}
+#wosLoading .spin{width:34px;height:34px;border-radius:50%;border:3px solid #6f9be055;border-top-color:#6f9be0;margin:0 auto 14px;animation:wosspin 0.9s linear infinite}
+@keyframes wosspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){#wosLoading .spin{animation:none}}
+#wosPage{position:fixed;inset:0;z-index:80;display:flex;flex-direction:column;background:#fff}
+#wosPage .wos-bar{display:flex;align-items:center;gap:12px;background:#071220;color:#dbe6f7;padding:8px 12px;padding-top:calc(8px + env(safe-area-inset-top,0px));padding-left:max(12px,env(safe-area-inset-left,0px));padding-right:max(12px,env(safe-area-inset-right,0px));font:13px system-ui,-apple-system,sans-serif}
+#wosBack{background:#1e3a5f;color:#fff;border:0;border-radius:8px;padding:8px 12px;font:600 14px system-ui,-apple-system,sans-serif;cursor:pointer;flex-shrink:0}
+#wosBack:focus-visible{outline:2px solid #6f9be0;outline-offset:2px}
+#wosUrl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8;min-width:0}
+#wosFrame{flex:1;width:100%;border:0;background:#fff}
+#wosReset{margin-left:auto}
+</style>
+<div id="wosLoading"><div><div class="spin"></div><span>Webhafen OS startet …</span></div></div>
+
